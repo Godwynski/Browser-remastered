@@ -1,0 +1,16 @@
+{
+  "name": "brave-mcp-workspace",
+  "version": "2.0.0",
+  "description": "Evidence-Grounded Brave Browser Agent & CDP Bridge Engine for Antigravity",
+  "type": "module",
+  "scripts": {
+    "start": "npm --prefix brave-mcp start",
+    "test": "npm --prefix brave-mcp test",
+    "test:battery": "npm --prefix brave-mcp run test:battery",
+    "test:tokens": "npm --prefix brave-mcp run test:tokens",
+    "test:workflow": "npm --prefix brave-mcp run test:workflow",
+    "test:all": "npm --prefix brave-mcp run test:all",
+    "audit": "node brave-mcp/scripts/cdp/audit-workspace.js",
+    "telemetry": "node brave-mcp/src/telemetry-server.js"
+  }
+}

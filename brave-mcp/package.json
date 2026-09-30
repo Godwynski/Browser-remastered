@@ -1,0 +1,22 @@
+{
+  "name": "brave-mcp",
+  "version": "1.0.0",
+  "description": "Evidence-grounded browser control MCP server for Brave via Playwright CDP",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/test-connection.js",
+    "test:protocol": "node test/test-mcp-protocol.js",
+    "test:battery": "node test/test-battery.js",
+    "test:tokens": "node test/test-token-optimizations.js",
+    "test:workflow": "node test/test-workflow.js",
+    "test:cobrowse": "node test/test-battery.js",
+    "test:all": "npm run test:protocol && npm run test:tokens && npm run test:workflow && npm run test:battery && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.6.1",
+    "playwright-core": "^1.50.1",
+    "ws": "^8.21.3"
+  }
+}

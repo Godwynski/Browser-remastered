@@ -1,0 +1,31 @@
+# Runtime Artifacts & Task Outputs
+artifacts/
+downloads/
+temp/
+.tmp/
+scratch/
+*.log
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Legacy directories (prevent accidental re-creation at root)
+Handouts/
+Syllabi/
+
+# Document & Media Binaries
+*.pdf
+*.pptx
+*.docx
+*.xlsx
+*.zip
+*.tar.gz
+
+# Node & Dependencies
+node_modules/
+
+# OS Metadata
+.DS_Store
+Thumbs.db

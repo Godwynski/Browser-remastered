@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Mission Control — Browser Agent Console</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Background Glow Accents -->
+  <div class="bg-glow glow-1"></div>
+  <div class="bg-glow glow-2"></div>
+
+  <div class="app-layout">
+    <!-- Navbar -->
+    <header class="navbar">
+      <div class="nav-left">
+        <div class="brand-logo">⚡</div>
+        <div class="brand-info">
+          <h1>ANTIGRAVITY MISSION CONTROL</h1>
+          <span class="brand-subtitle">Evidence-Grounded Brave Browser Agent Console</span>
+        </div>
+      </div>
+
+      <div class="nav-center">
+        <div class="conn-pill" id="cdp-status-pill">
+          <span class="status-indicator online" id="cdp-dot"></span>
+          <span class="conn-label" id="cdp-label">Brave CDP Port 9222 Ready</span>
+        </div>
+        <div class="conn-pill" id="ws-status-pill">
+          <span class="status-indicator online" id="ws-dot"></span>
+          <span class="conn-label" id="ws-label">Live Telemetry Connected</span>
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <button class="btn btn-secondary" id="btn-health-check">📡 Health Check</button>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="main-grid">
+      <!-- Left Column: Active Task & Operations -->
+      <section class="left-col">
+        <!-- Active Mission Banner -->
+        <div class="mission-card" id="mission-banner">
+          <div class="mission-header">
+            <div class="mission-meta">
+              <span class="badge" id="banner-subject">BROWSER AGENT</span>
+              <span class="time-elapsed" id="banner-status-text">Ready for operations</span>
+            </div>
+            <span class="progress-percent" id="banner-percent">0%</span>
+          </div>
+          <h2 class="mission-title" id="banner-title">Idle — Waiting for Operations</h2>
+          <p class="mission-step" id="banner-step">No script currently executing</p>
+          <div class="progress-track">
+            <div class="progress-fill" id="banner-progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <!-- Directive Submission Box -->
+        <div class="section-title-bar">
+          <h3>⚡ AI DIRECTIVE COMMAND BAR</h3>
+          <span class="section-desc">Broadcast high-priority instructions to Antigravity</span>
+        </div>
+
+        <div class="directive-box">
+          <input type="text" class="directive-input" id="dashboard-directive-input" placeholder="Type directive (e.g. 'Navigate to GitHub and extract trending repos')..." />
+          <button class="btn btn-primary" id="btn-submit-directive">➤ Send Directive</button>
+        </div>
+
+        <!-- Directives Queue -->
+        <div class="section-title-bar" style="margin-top: 24px;">
+          <h3>📋 RECENT DIRECTIVES</h3>
+          <span class="section-desc">Active queue dispatched from HUD and Console</span>
+        </div>
+        <div class="directives-list" id="directives-list">
+          <div class="empty-state">No directives queued. Type above to dispatch one.</div>
+        </div>
+      </section>
+
+      <!-- Right Column: Live Telemetry Terminal -->
+      <section class="right-col">
+        <div class="terminal-card">
+          <div class="terminal-header">
+            <div class="terminal-title">
+              <span class="term-dot"></span>
+              <span>LIVE TELEMETRY STREAM</span>
+            </div>
+            <div class="terminal-actions">
+              <button class="mini-btn" id="btn-clear-term">Clear</button>
+            </div>
+          </div>
+          <div class="terminal-body" id="terminal-logs">
+            <div class="log-entry info"><span class="log-time">00:00:00</span>Connecting to WebSocket daemon on ws://localhost:8765...</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/dashboard.js"></script>
+</body>
+</html>
