@@ -95,25 +95,33 @@ graph TD
 
 ## 🚀 Quick Start Guide
 
-### Step 1: Launch Your Browser with Remote Debugging (Port 9222)
+### 1-Click Universal Setup (Any PC)
 
-Before the AI agent can attach, your browser must run with `--remote-debugging-port=9222`. Both **Brave** and **Microsoft Edge** are supported out-of-the-box.
+On any new computer, simply run:
+1. **`setup.cmd`** (Double-click):
+   - Automatically installs all MCP dependencies (`npm install`).
+   - Automatically registers `brave-control` in your global Antigravity config (`~/.gemini/config/mcp_config.json`).
+2. **`launch.cmd`** (Double-click):
+   - Auto-detects **Brave**, **Google Chrome**, or **Microsoft Edge** and launches with CDP debugging enabled (port 9222).
+   - Or specify browser: `launch.cmd brave`, `launch.cmd chrome`, or `launch.cmd edge`.
 
-#### If Using Brave Browser:
+---
+
+### Manual Launchers Reference (Port 9222)
+
+If you prefer launching individual browsers manually:
+
+#### Brave Browser
 - **Batch (Windows)**: Double-click `brave-launcher\launch-brave.cmd`
 - **PowerShell**: `.\brave-launcher\launch-brave.ps1`
 - **Permanent Desktop Shortcut**: Run `powershell -ExecutionPolicy Bypass -File .\brave-launcher\create-connected-shortcut.ps1`
 
-#### If Using Microsoft Edge:
+#### Google Chrome
+- **Batch (Windows)**: Double-click `brave-launcher\launch-chrome.cmd`
+
+#### Microsoft Edge
 - **Batch (Windows)**: Double-click `brave-launcher\launch-edge.cmd`
 - **PowerShell**: `.\brave-launcher\launch-edge.ps1`
-- **Manual PowerShell Launch**:
-  ```powershell
-  # 1. Terminate background processes (Edge Startup Boost blocks port 9222 if running)
-  taskkill /f /im msedge.exe
-  # 2. Launch Edge with CDP enabled
-  & "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:LOCALAPPDATA\Microsoft\Edge\User Data" --restore-last-session
-  ```
 
 > [!TIP]
 > **Edge Optimization**: Open `edge://settings/system` in Edge and turn **OFF** *"Startup boost"* and *"Continue running background extensions and apps when Microsoft Edge is closed"*. This ensures Edge fully terminates when closed and allows the debug flag to bind cleanly.
@@ -331,9 +339,12 @@ Browser-activity/
 │       ├── test-workflow.js       # Pagination & workflow execution test
 │       ├── test-self-healing.js   # 5-tier self-healing action engine test
 │       └── test-helper.js         # Browser binary resolver utility
+├── setup.cmd                      # 1-Click universal installer (npm + MCP registration)
+├── launch.cmd                     # Universal launcher (auto-detects Brave, Chrome, or Edge)
 ├── brave-launcher/                # Browser startup & CDP connection utilities
 │   ├── launch-brave.cmd           # Double-click batch launcher for Brave
 │   ├── launch-brave.ps1           # PowerShell launcher for Brave
+│   ├── launch-chrome.cmd          # Double-click batch launcher for Google Chrome
 │   ├── launch-edge.cmd            # Double-click batch launcher for Microsoft Edge
 │   ├── launch-edge.ps1            # PowerShell launcher for Microsoft Edge
 │   └── create-connected-shortcut.ps1 # Permanent desktop shortcut generator
