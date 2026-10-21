@@ -114,11 +114,11 @@ export class BrowserObserver {
       const trimmed = rawLine.trim();
       if (!trimmed.startsWith('-')) continue;
 
-      const match = trimmed.match(/^-\s*([a-zA-Z0-9_-]+)(?::\s*|\s+)?(?:"([^"]*)")?(.*)$/);
+      const match = trimmed.match(/^-\s*([a-zA-Z0-9_-]+)(?::\s*|\s+)?(?:"((?:\\.|[^"\\])*)")?(.*)$/);
       if (!match) continue;
 
       const role = match[1].toLowerCase();
-      const name = match[2] ? match[2].trim() : undefined;
+      const name = match[2] ? match[2].replace(/\\"/g, '"').trim() : undefined;
       const flags = match[3] || '';
 
       if (role === 'document' || role === 'heading' || role === 'paragraph' || role === 'text' || role === 'group') {

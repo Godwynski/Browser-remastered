@@ -7,6 +7,8 @@ export class BraveManager {
     this.cdpUrl = cdpUrl;
     this.browser = null;
     this.context = null;
+    this.browserCdpSession = null;
+    this.activePageIndex = null;
     ensureArtifactDirs();
   }
 
@@ -14,11 +16,11 @@ export class BraveManager {
    * Enforces browser-level CDP download routing directly to the dedicated artifacts directory.
    */
   async _enforceBrowserDownloadBehavior(browserInstance) {
-    if (!browserInstance) return;
+    if (!browserInstance || this.browserCdpSession) return;
     try {
       ensureArtifactDirs();
-      const session = await browserInstance.newBrowserCDPSession();
-      await session.send('Browser.setDownloadBehavior', {
+      this.browserCdpSession = await browserInstance.newBrowserCDPSession();
+      await this.browserCdpSession.send('Browser.setDownloadBehavior', {
         behavior: 'allowAndName',
         downloadPath: PATHS.downloadsRaw,
         eventsEnabled: true
@@ -65,6 +67,7 @@ export class BraveManager {
     }
     this.browser = null;
     this.context = null;
+    this.browserCdpSession = null;
 
     let lastErr = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -127,7 +130,15 @@ export class BraveManager {
       pages.map(p => p.evaluate(() => document.visibilityState === 'visible').catch(() => false))
     );
     const activeIndex = visibilities.findIndex(v => v === true);
-    const targetPage = activeIndex !== -1 ? pages[activeIndex] : (pages[pages.length - 1] || pages[0]);
+    let targetPage = null;
+    if (activeIndex !== -1) {
+      this.activePageIndex = activeIndex;
+      targetPage = pages[activeIndex];
+    } else if (this.activePageIndex !== null && this.activePageIndex < pages.length && !pages[this.activePageIndex].isClosed()) {
+      targetPage = pages[this.activePageIndex];
+    } else {
+      targetPage = pages[pages.length - 1] || pages[0];
+    }
     await this._setupPageDownloads(targetPage);
     return targetPage;
   }
@@ -171,6 +182,7 @@ export class BraveManager {
     if (index < 0 || index >= pages.length) {
       throw new Error(`Tab index ${index} out of range (0 to ${pages.length - 1}).`);
     }
+    this.activePageIndex = index;
     const page = pages[index];
     if (bringToFront) {
       await page.bringToFront().catch(() => {});
