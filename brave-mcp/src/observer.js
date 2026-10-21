@@ -337,7 +337,8 @@ export class BrowserObserver {
               if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
             }
 
-            const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('value') || '').trim();
+            const rawText = el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('value') || '';
+            const text = rawText.replace(/\s+/g, ' ').trim();
             const isFormInput = ['input', 'textarea', 'select'].includes(tag);
             // Drop completely empty, unlabelled non-input nodes to save tokens
             if (!text && !el.id && !el.name && !isFormInput && !isFileInput) {
