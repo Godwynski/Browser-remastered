@@ -703,6 +703,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const andObserve = args?.and_observe !== false;
         const receipts = [];
         let lastReceipt = null;
+        let batchError = null;
 
         for (let i = 0; i < args.actions.length; i++) {
           const isLast = i === args.actions.length - 1;
@@ -710,26 +711,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ...args.actions[i],
             includeScreenshot: isLast ? (args.includeScreenshot ?? false) : false
           };
-          const receipt = await actionEngine.execute(page, actionArgs, {
-            suppressInvalidate: !isLast,
-            andObserve: isLast && andObserve
-          });
-          lastReceipt = receipt;
-          receipts.push({
-            step: i + 1,
-            action: receipt.action,
-            executed: receipt.executed,
-            changes: receipt.changes
-          });
+          try {
+            const receipt = await actionEngine.execute(page, actionArgs, {
+              suppressInvalidate: !isLast,
+              andObserve: isLast && andObserve
+            });
+            lastReceipt = receipt;
+            receipts.push({
+              step: i + 1,
+              action: receipt.action,
+              executed: receipt.executed,
+              changes: receipt.changes
+            });
+          } catch (err) {
+            batchError = `Step ${i + 1} failed: ${err.message}`;
+            receipts.push({
+              step: i + 1,
+              action: { type: actionArgs.action, ref: actionArgs.ref },
+              executed: false,
+              changes: [batchError]
+            });
+            break;
+          }
         }
 
         let resultText = '';
         if (args?.format === 'json') {
           resultText = JSON.stringify(
             {
-              status: 'Batch Executed',
+              status: batchError ? 'Batch Partially Executed' : 'Batch Executed',
+              error: batchError || undefined,
               target: args?.target || 'agent',
-              steps_completed: receipts.length,
+              steps_completed: receipts.filter(r => r.executed).length,
               receipts,
               nextObservation: lastReceipt?.nextObservation
             },
@@ -737,10 +750,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             2
           );
         } else {
-          resultText = `BATCH COMPLETED (${receipts.length} steps):\n`;
+          resultText = `${batchError ? 'BATCH HALTED ON ERROR' : 'BATCH COMPLETED'} (${receipts.length} steps processed):\n`;
           receipts.forEach(r => {
-            resultText += `- Step ${r.step}: ${r.changes.join('; ')}\n`;
+            resultText += `- Step ${r.step} [${r.executed ? 'OK' : 'FAIL'}]: ${r.changes.join('; ')}\n`;
           });
+          if (batchError) {
+            resultText += `\nERROR: ${batchError}\n`;
+          }
           if (lastReceipt?.nextObservation) {
             resultText += `\n${lastReceipt.nextObservation.elements_compact}`;
           }

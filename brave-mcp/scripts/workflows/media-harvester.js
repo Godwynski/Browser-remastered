@@ -11,7 +11,7 @@ export async function run(page, params = {}) {
 
     // Helper to add unique media
     function addMedia(src, mediaType, title = '') {
-      if (!src || src.startsWith('blob:') && type !== 'all') return;
+      if (!src || src.startsWith('data:') || (src.startsWith('blob:') && type !== 'all')) return;
       if (!results.some(r => r.src === src)) {
         results.push({
           type: mediaType,

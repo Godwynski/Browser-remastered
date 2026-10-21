@@ -47,7 +47,7 @@ async function main() {
     const safeDomain = domainToInspect.replace(/[^a-zA-Z0-9.-]/g, '_');
     const outFile = path.join(sessionDir, `${safeDomain}_cookies.json`);
 
-    fs.writeFileSync(outFile, JSON.stringify(domainCookies, null, 2), 'utf8');
+    fs.writeFileSync(outFile, JSON.stringify(domainCookies, null, 2), { encoding: 'utf8', mode: 0o600 });
     console.log(`   💾 Exported ${domainCookies.length} cookies to: ${outFile}\n`);
   }
 }

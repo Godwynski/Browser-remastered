@@ -17,7 +17,9 @@
   ],
   "host_permissions": [
     "<all_urls>",
-    "http://localhost:8765/*"
+    "http://localhost:8765/*",
+    "ws://localhost:8765/*",
+    "ws://127.0.0.1:8765/*"
   ],
   "commands": {
     "toggle-hud": {

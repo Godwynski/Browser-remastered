@@ -25,7 +25,9 @@ export async function run(page, params = {}) {
       }
     }
 
-    return { headers, count: records.length, records };
+    const csvRows = records.map(r => headers.map(h => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','));
+    const csv = [headers.map(h => `"${h}"`).join(','), ...csvRows].join('\n');
+    return { headers, count: records.length, records, csv };
   }, { tableSel: selector, rowLimit: limit });
 
   return data;
