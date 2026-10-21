@@ -26,7 +26,7 @@ graph TD
         AGY["Antigravity IDE / CLI"]
     end
 
-    subgraph Config["Global MCP Layer (~/.gemini/config/mcp_config.json)"]
+    subgraph Config["Global MCP Layer"]
         CMD["run-mcp.cmd (Node.js Stdio Pipe)"]
     end
 
@@ -39,20 +39,20 @@ graph TD
         TEL["src/telemetry-server.js (WebSocket Daemon)"]
     end
 
-    subgraph Brave["Brave Browser (Personal Profile)"]
+    subgraph Brave["Chromium Browser (Personal Profile)"]
         UW["User Tabs (Personal Browsing, Uninterrupted)"]
         AW["Agent Tabs (Dedicated Automated Workflows)"]
         EXT["brave-extension (Floating Mission Control HUD)"]
     end
 
-    AGY <-->|MCP Protocol (stdio)| CMD
+    AGY <-->|"MCP Protocol (stdio)"| CMD
     CMD <--> INDEX
     INDEX --> BROWSER
-    BROWSER <-->|CDP WebSocket ws://localhost:9222| Brave
+    BROWSER <-->|"CDP Port 9222"| Brave
     BROWSER --> OBS
     BROWSER --> ACT
     ACT --> VER
-    TEL <-->|ws://localhost:8765| EXT
+    TEL <-->|"HUD Port 8765"| EXT
 ```
 
 ---
