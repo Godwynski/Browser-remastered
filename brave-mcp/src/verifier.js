@@ -27,8 +27,8 @@ export class StateVerifier {
   async captureAfterState(page, beforeState, options = {}) {
     const { includeScreenshot = false } = options;
 
-    // Small stabilization pause for DOM events/microtasks
-    await page.waitForTimeout(350).catch(() => {});
+    // Fast deterministic stabilization: requestAnimationFrame + micro-wait instead of blind 350ms sleep
+    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => setTimeout(r, 60)))).catch(() => {});
 
     const afterUrl = page.url();
     const afterTitle = await page.title().catch(() => '');

@@ -1,6 +1,7 @@
 import { chromium } from 'playwright-core';
 import http from 'http';
 import { WorkflowEngine } from '../src/workflow.js';
+import { getTestBrowserExe } from './test-helper.js';
 
 function createMockServer(port = 9444) {
   let pageNumber = 1;
@@ -67,7 +68,7 @@ async function testWorkflowEngine() {
   console.log("==========================================================\n");
 
   const server = await createMockServer(9444);
-  const edgeExe = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+  const edgeExe = getTestBrowserExe();
   const browser = await chromium.launch({
     executablePath: edgeExe,
     headless: true,

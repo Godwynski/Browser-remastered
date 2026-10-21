@@ -29,3 +29,14 @@ node_modules/
 # OS Metadata
 .DS_Store
 Thumbs.db
+
+# Local Audits & Reports
+audit.md
+
+# Environment & Secrets
+.env
+.env.*
+*.key
+*.pem
+*.cert
+

@@ -102,7 +102,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             includeScreenshot: {
               type: 'boolean',
-              description: 'Whether to capture and return a base64 viewport screenshot (default false for fast token-efficient reasoning)',
+              description: 'Whether to capture and return a base64 viewport or cropped screenshot (default false for fast token-efficient reasoning)',
+              default: false
+            },
+            screenshotScope: {
+              type: 'string',
+              description: 'Optional CSS selector to crop screenshot to a specific element (e.g. "#login-box", "canvas", "table"). Saves 85%+ vision tokens.'
+            },
+            clip: {
+              type: 'object',
+              description: 'Optional bounding box { x, y, width, height } to crop screenshot. Saves 85%+ vision tokens.'
+            },
+            visibleOnly: {
+              type: 'boolean',
+              description: 'Only index elements currently inside the active viewport (omits offscreen elements for maximum token density)',
               default: false
             },
             maxElements: {
@@ -146,17 +159,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'brave_act',
         description:
-          'Executes an autonomous, browser-native action against the targeted Brave tab. ' +
-          'By default runs safely inside the isolated Agent Workspace window without stealing user focus or interrupting your typing. ' +
-          'Supports clicking, typing, pressing keys, scrolling, selecting dropdowns, and uploading files.',
+          'Executes an autonomous, browser-native action against the targeted Brave tab with multi-tier self-healing and direct coordinate/vision fallbacks. ' +
+          'DIRECT EXECUTION: Execute immediately without conversational preamble or chain-of-thought commentary. ' +
+          'Supports clicking, typing, pressing keys, scrolling, dragging, selecting dropdowns, uploading files, and direct coordinate interaction (for canvas, maps, SVG, and stubborn UI).',
         inputSchema: {
           type: 'object',
           required: ['action'],
           properties: {
             action: {
               type: 'string',
-              enum: ['click', 'type', 'press', 'scroll', 'hover', 'select_option', 'upload_file'],
+              enum: ['click', 'type', 'press', 'scroll', 'hover', 'drag', 'select_option', 'upload_file'],
               description: 'The browser action to execute'
+            },
+            coordinate: {
+              type: 'array',
+              items: { type: 'number' },
+              description: 'Direct screen coordinate [x, y] to click, type, or hover. Universal fallback that bypasses DOM inspection (ideal for canvas, WebGL, SVG, charts, and maps).'
+            },
+            clickCount: {
+              type: 'integer',
+              description: 'Number of clicks for action "click" (e.g. 2 for double-click, 3 for triple-click). Default 1.',
+              default: 1
+            },
+            button: {
+              type: 'string',
+              enum: ['left', 'right', 'middle'],
+              description: 'Mouse button for click action (default "left"). Set to "right" for context menus.',
+              default: 'left'
             },
             target: {
               type: 'string',
@@ -170,7 +199,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             ref: {
               type: 'string',
-              description: "The ephemeral element reference from brave_observe (e.g. 'e1', 'e2'). Required for click, type, hover, select_option, upload_file."
+              description: "The ephemeral element reference from brave_observe (e.g. 'e1', 'e2'). Required unless coordinate is provided."
             },
             obs_id: {
               type: 'string',
@@ -184,6 +213,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: 'boolean',
               description: "Whether to press Enter immediately after typing (useful for search inputs)",
               default: false
+            },
+            clear: {
+              type: 'boolean',
+              description: "Whether to clear existing text before typing (default true)",
+              default: true
+            },
+            startCoordinate: {
+              type: 'array',
+              items: { type: 'number' },
+              description: "Starting [x, y] coordinate for action 'drag'"
+            },
+            endCoordinate: {
+              type: 'array',
+              items: { type: 'number' },
+              description: "Ending [x, y] coordinate for action 'drag'"
+            },
+            startRef: {
+              type: 'string',
+              description: "Starting element ref for action 'drag'"
+            },
+            endRef: {
+              type: 'string',
+              description: "Ending element ref for action 'drag'"
+            },
+            steps: {
+              type: 'integer',
+              description: "Number of intermediate mouse movement steps for action 'drag' (default 15)",
+              default: 15
             },
             key: {
               type: 'string',
@@ -226,6 +283,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: 'brave_batch_act',
         description:
           'Executes an array of sequential browser actions in a single tool call without multi-turn LLM loops. ' +
+          'DIRECT EXECUTION: Batch all sequential steps (e.g. fill inputs, click submit) in 1 turn without narrative commentary. ' +
           'Saves significant conversation context tokens and eliminates round-trip latency.',
         inputSchema: {
           type: 'object',
@@ -444,17 +502,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
+        const targetIdx = args?.index !== undefined ? args.index : args?.tabIndex;
+
         if (action === 'switch') {
-          if (args.index === undefined) {
-            throw new Error("Parameter 'index' is required for action 'switch'.");
+          if (targetIdx === undefined) {
+            throw new Error("Parameter 'index' or 'tabIndex' is required for action 'switch'.");
           }
-          const page = await brave.setActivePage(args.index, { bringToFront: args.bringToFront ?? false });
+          const page = await brave.setActivePage(targetIdx, { bringToFront: args.bringToFront ?? true });
           const title = await page.title().catch(() => '');
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ success: true, activeTabIndex: args.index, title, url: page.url() }, null, 2)
+                text: JSON.stringify({ success: true, activeTabIndex: targetIdx, title, url: page.url() }, null, 2)
               }
             ]
           };
@@ -473,8 +533,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (action === 'focus') {
-          const targetIndex = args.index !== undefined ? args.index : null;
-          const page = await brave.getTargetPage('active', targetIndex);
+          const page = await brave.getTargetPage('active', targetIdx ?? null);
           await page.bringToFront().catch(() => {});
           const title = await page.title().catch(() => '');
           return {
@@ -488,16 +547,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         if (action === 'close') {
-          if (args.index === undefined) {
-            throw new Error("Parameter 'index' is required for action 'close'.");
+          if (targetIdx === undefined) {
+            throw new Error("Parameter 'index' or 'tabIndex' is required for action 'close'.");
           }
-          await brave.closeTab(args.index);
+          await brave.closeTab(targetIdx);
           const tabs = await brave.listTabs();
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ success: true, closedIndex: args.index, remainingTabs: tabs }, null, 2)
+                text: JSON.stringify({ success: true, closedIndex: targetIdx, remainingTabs: tabs }, null, 2)
               }
             ]
           };
@@ -510,10 +569,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
         const observation = await observer.observe(page, {
           includeScreenshot: args?.includeScreenshot ?? false,
+          screenshotScope: args?.screenshotScope || null,
+          clip: args?.clip || null,
           maxElements: args?.maxElements ?? 60,
           format: args?.format || 'compact',
           scope: args?.scope || null,
-          filter: args?.filter || 'interactive'
+          filter: args?.filter || 'interactive',
+          visibleOnly: args?.visibleOnly ?? false,
+          directives: globalTelemetry.directives.slice(-3)
         });
 
         let responseText = '';
@@ -525,6 +588,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               tab: observation.tab,
               page: observation.page,
               alerts: observation.alerts,
+              directives: observation.directives || [],
               element_count: observation.element_count,
               elements: observation.elements
             },
@@ -545,7 +609,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (observation.screenshot) {
           content.push({
             type: 'text',
-            text: `[Screenshot attached: ${observation.screenshot.slice(0, 100)}... (${observation.screenshot.length} chars)]`
+            text: `[Screenshot attached (${observation.screenshot_scope || 'viewport'}): ${observation.screenshot.slice(0, 100)}... (${observation.screenshot.length} chars)]`
           });
         }
 
@@ -756,9 +820,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (action === 'goto') {
           if (!args.url) throw new Error("Parameter 'url' is required for action 'goto'.");
-          let targetUrl = args.url;
-          if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://') && !targetUrl.startsWith('about:')) {
-            targetUrl = `https://${targetUrl}`;
+          let targetUrl = args.url.trim();
+          const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(targetUrl);
+          const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(targetUrl);
+          if (!hasScheme) {
+            targetUrl = isLocal ? `http://${targetUrl}` : `https://${targetUrl}`;
           }
           await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout });
         } else if (action === 'reload') {

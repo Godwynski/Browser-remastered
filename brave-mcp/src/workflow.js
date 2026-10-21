@@ -34,6 +34,7 @@ export class WorkflowEngine {
     } = options;
 
     const allItems = [];
+    const seenKeys = new Set();
     let currentPage = 1;
 
     while (currentPage <= maxPages && allItems.length < maxItems) {
@@ -70,9 +71,18 @@ export class WorkflowEngine {
         return extracted;
       }, { selector: itemSelector, limit: maxItems - allItems.length });
 
-      allItems.push(...pageItems);
+      let newItemsAdded = 0;
+      for (const item of pageItems) {
+        if (allItems.length >= maxItems) break;
+        const key = item.link || (item.title ? `${item.title}:${item.text}` : item.text);
+        if (!seenKeys.has(key)) {
+          seenKeys.add(key);
+          allItems.push(item);
+          newItemsAdded++;
+        }
+      }
 
-      if (currentPage >= maxPages || allItems.length >= maxItems) break;
+      if (currentPage >= maxPages || allItems.length >= maxItems || (scrollMode && newItemsAdded === 0 && currentPage > 1)) break;
 
       // Navigate to next page
       if (scrollMode) {
@@ -187,7 +197,7 @@ export class WorkflowEngine {
     const cleanName = scriptName.endsWith('.js') ? scriptName : `${scriptName}.js`;
     const targetScript = path.resolve(WORKFLOWS_DIR, cleanName);
 
-    if (!targetScript.startsWith(WORKFLOWS_DIR) || !fs.existsSync(targetScript)) {
+    if (!targetScript.startsWith(WORKFLOWS_DIR + path.sep) || !fs.existsSync(targetScript)) {
       throw new Error(`Workflow script '${cleanName}' not found in scripts/workflows/.`);
     }
 

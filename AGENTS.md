@@ -3,11 +3,10 @@
 ## 🌐 Workspace Overview & Purpose
 This workspace is the dedicated developer repository for **Evidence-Grounded Brave Browser Agent (`brave-mcp`)**, the Chrome DevTools Protocol (CDP) bridge connecting AI agents (Antigravity / Gemini) directly to your running **Brave Browser**.
 
-### ⚠️ Workspace Separation Notice: Where is Coursework?
+### ⚠️ Workspace Separation Notice: Decoupled Coursework
 > [!IMPORTANT]
 > **Academic Coursework Decoupled**:
-> All STI College coursework, subject folders, assignments, and academic skills have been separated into a dedicated workspace:
-> 👉 **`C:\Users\Godwyn\Documents\Projects\STI-College`**
+> All external coursework, subject folders, assignments, and academic skills have been separated into a dedicated external workspace.
 > 
 > When working in this repository (`Browser remastered`), the AI agent must **never** look for coursework or create assignment files. This repository is strictly for browser infrastructure and web automation engineering.
 
@@ -98,8 +97,9 @@ When modifying `brave-mcp`, always run the test battery to verify that protocol 
 cd brave-mcp
 npm test               # Run live CDP diagnostic test against active Brave browser
 npm run test:protocol  # Verify 8-tool MCP JSON-RPC protocol discovery
-npm run test:tokens    # Token reduction (70%+ savings), compact notation & alerts test
+npm run test:tokens    # Token reduction (79%+ savings), compact notation & alerts test
 npm run test:workflow  # Universal pagination, bulk action & compiled script test
+npm run test:healing   # 5-tier self-healing action engine & overlay auto-dismissal
 npm run test:battery   # 14-point critical guarantee test battery
 npm run test:all       # Run entire comprehensive test suite
 ```

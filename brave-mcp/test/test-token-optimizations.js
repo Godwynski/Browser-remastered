@@ -3,13 +3,14 @@ import { BrowserObserver } from '../src/observer.js';
 import { StateVerifier } from '../src/verifier.js';
 import { ActionEngine } from '../src/actions.js';
 import { ContentReader } from '../src/reader.js';
+import { getTestBrowserExe } from './test-helper.js';
 
 async function testTokenOptimizations() {
   console.log("==========================================================");
   console.log("🧪 TESTING TOKEN OPTIMIZATIONS (COMPACT, SCOPE, EVAL, BATCH, READ, AND_OBSERVE, ALERTS)");
   console.log("==========================================================\n");
 
-  const edgeExe = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+  const edgeExe = getTestBrowserExe();
   const browser = await chromium.launch({
     executablePath: edgeExe,
     headless: true,
@@ -44,7 +45,7 @@ async function testTokenOptimizations() {
         <main id="main-content">
           <h1>Course Dashboard</h1>
           <form id="submission-form">
-            <input type="text" id="student-name" placeholder="Student Name" value="Godwyn" />
+            <input type="text" id="student-name" placeholder="Student Name" value="Alex Doe" />
             <select id="course-select">
               <option value="cs101">Computer Graphics</option>
               <option value="cs102">Game Development</option>
@@ -192,7 +193,7 @@ async function testTokenOptimizations() {
       courses: Array.from(document.querySelectorAll('#course-select option')).map(o => o.text)
     };
   });
-  if (evalResult.studentName !== 'Godwyn' || evalResult.courses.length !== 2) {
+  if (evalResult.studentName !== 'Alex Doe' || evalResult.courses.length !== 2) {
     throw new Error("Evaluation returned unexpected result");
   }
   console.log("   ✅ brave_eval executed with 0 token observation overhead!");

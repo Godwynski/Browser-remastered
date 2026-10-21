@@ -21,7 +21,7 @@ Use this skill when you need to fill out web forms (surveys, login inputs, searc
 ### CLI Execution
 ```bash
 # Fill a form using a JSON string
-node .agents/skills/web-form-filler/scripts/form-filler-cli.js --active --data '{"username":"Godwyn","email":"godwyn@example.com"}' --submit
+node .agents/skills/web-form-filler/scripts/form-filler-cli.js --active --data '{"username":"demo_user","email":"demo@example.com"}' --submit
 
 # Fill a form using a JSON file payload
 node .agents/skills/web-form-filler/scripts/form-filler-cli.js --active --file "artifacts/form_data.json" --submit

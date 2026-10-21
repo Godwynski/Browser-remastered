@@ -25,9 +25,10 @@ if (-not $TargetBrave) {
     exit 1
 }
 
+$UserData = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
 $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = $TargetBrave
-$Shortcut.Arguments = "--remote-debugging-port=9222 --remote-allow-origins=* --restore-last-session"
+$Shortcut.Arguments = "--remote-debugging-port=9222 --remote-allow-origins=* `"--user-data-dir=$UserData`" --restore-last-session"
 $Shortcut.Description = "Launch Brave with Antigravity DevTools Connection (Port 9222)"
 $Shortcut.WorkingDirectory = Split-Path $TargetBrave
 $Shortcut.IconLocation = "$TargetBrave,0"

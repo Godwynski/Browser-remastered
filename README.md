@@ -11,10 +11,10 @@ Direct, evidence-grounded browser control bridge connecting **Antigravity / Gemi
 
 > [!IMPORTANT]
 > ### ⚠️ Academic Coursework Separation Notice
-> **All STI College coursework, subject materials, and academic assignments have been cleanly decoupled from this repository.**
-> - **Coursework Workspace**: [`C:\Users\Godwyn\Documents\Projects\STI-College`](file:///C:/Users/Godwyn/Documents/Projects/STI-College)
+> **All coursework, subject materials, and external academic assignments have been cleanly decoupled from this repository.**
+> - **External Projects**: Kept completely isolated in separate dedicated project directories.
 > - **This Repository (`Browser remastered`)**: Dedicated strictly to browser automation infrastructure, the CDP bridge MCP server, launcher utilities, companion extensions, and test suites.
-> - **Global Availability**: The browser MCP server configured here serves the **entire computer globally** via `~/.gemini/config/mcp_config.json`. Any workspace (including `STI-College`) can automate Brave without duplicating code.
+> - **Global Availability**: The browser MCP server configured here serves the **entire computer globally** via `~/.gemini/config/mcp_config.json`. Any workspace on your machine can automate Brave without duplicating code.
 
 ---
 
@@ -120,7 +120,7 @@ Before the AI agent can attach, your browser must run with `--remote-debugging-p
 ### Step 2: Global Antigravity MCP Configuration
 
 The MCP server is registered in your global configuration:
-[`C:\Users\Godwyn\.gemini\config\mcp_config.json`](file:///C:/Users/Godwyn/.gemini/config/mcp_config.json)
+`~/.gemini/config/mcp_config.json`
 
 ```json
 {
@@ -129,7 +129,7 @@ The MCP server is registered in your global configuration:
       "command": "cmd.exe",
       "args": [
         "/c",
-        "c:\\Users\\Godwyn\\Documents\\Projects\\Browser remastered\\brave-mcp\\run-mcp.cmd"
+        "C:\\path\\to\\Browser remastered\\brave-mcp\\run-mcp.cmd"
       ]
     }
   }
@@ -392,7 +392,7 @@ npm run test:all
 
 ### 3. Antigravity does not list `brave-control` tools
 - **Cause**: The MCP server is either not configured in `mcp_config.json` or path syntax has unescaped backslashes.
-- **Fix**: Verify [`C:\Users\Godwyn\.gemini\config\mcp_config.json`](file:///C:/Users/Godwyn/.gemini/config/mcp_config.json) points to `c:\\Users\\Godwyn\\Documents\\Projects\\Browser remastered\\brave-mcp\\run-mcp.cmd`.
+- **Fix**: Verify `~/.gemini/config/mcp_config.json` points to your local `brave-mcp\run-mcp.cmd` path with properly escaped backslashes.
 
 ### 4. Agent is stealing focus or clicking on personal tabs
 - **Cause**: Actions are being directed to `target: "user"` instead of the default isolated `target: "agent"`.

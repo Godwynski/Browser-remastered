@@ -32,7 +32,8 @@ export class BraveManager {
    * Attaches page-level download routing to save into artifacts/downloads.
    */
   async _setupPageDownloads(page, downloadDir = PATHS.downloadsRaw) {
-    if (!page || page.isClosed()) return;
+    if (!page || page.isClosed() || page._downloadsConfigured) return;
+    page._downloadsConfigured = true;
     try {
       ensureArtifactDirs();
       const client = await page.context().newCDPSession(page);
@@ -121,20 +122,14 @@ export class BraveManager {
       throw new Error("No open tabs found in Brave.");
     }
 
-    // Return the tab currently visible to the user
-    for (const p of pages) {
-      try {
-        const isVisible = await p.evaluate(() => document.visibilityState === 'visible').catch(() => false);
-        if (isVisible) {
-          await this._setupPageDownloads(p);
-          return p;
-        }
-      } catch (e) {}
-    }
-
-    const fallbackPage = pages[pages.length - 1] || pages[0];
-    await this._setupPageDownloads(fallbackPage);
-    return fallbackPage;
+    // Check visible tab concurrently across all pages for zero-latency resolution
+    const visibilities = await Promise.all(
+      pages.map(p => p.evaluate(() => document.visibilityState === 'visible').catch(() => false))
+    );
+    const activeIndex = visibilities.findIndex(v => v === true);
+    const targetPage = activeIndex !== -1 ? pages[activeIndex] : (pages[pages.length - 1] || pages[0]);
+    await this._setupPageDownloads(targetPage);
+    return targetPage;
   }
 
   /**
@@ -171,7 +166,7 @@ export class BraveManager {
   /**
    * Sets the active tab by index.
    */
-  async setActivePage(index, { bringToFront = false } = {}) {
+  async setActivePage(index, { bringToFront = true } = {}) {
     const pages = await this.getPages();
     if (index < 0 || index >= pages.length) {
       throw new Error(`Tab index ${index} out of range (0 to ${pages.length - 1}).`);
@@ -207,6 +202,10 @@ export class BraveManager {
     if (index < 0 || index >= pages.length) {
       throw new Error(`Tab index ${index} out of range.`);
     }
+    // Prevent closing the browser window when only 1 tab exists
+    if (pages.length <= 1) {
+      await this.newTab('about:blank');
+    }
     await pages[index].close();
   }
 
@@ -215,25 +214,24 @@ export class BraveManager {
    */
   async listTabs() {
     const pages = await this.getPages();
-    const tabs = [];
-    for (let i = 0; i < pages.length; i++) {
-      const p = pages[i];
-      let title = 'Untitled';
-      let url = 'about:blank';
-      let isVisible = false;
-      try {
-        title = await p.title();
-        url = p.url();
-        isVisible = await p.evaluate(() => document.visibilityState === 'visible').catch(() => false);
-      } catch (e) {}
+    return await Promise.all(
+      pages.map(async (p, i) => {
+        let title = 'Untitled';
+        let url = 'about:blank';
+        let isVisible = false;
+        try {
+          title = await p.title();
+          url = p.url();
+          isVisible = await p.evaluate(() => document.visibilityState === 'visible').catch(() => false);
+        } catch (e) {}
 
-      tabs.push({
-        index: i,
-        title,
-        url,
-        isActive: isVisible
-      });
-    }
-    return tabs;
+        return {
+          index: i,
+          title,
+          url,
+          isActive: isVisible
+        };
+      })
+    );
   }
 }

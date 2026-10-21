@@ -9,6 +9,7 @@ import { BrowserObserver } from '../src/observer.js';
 import { StateVerifier } from '../src/verifier.js';
 import { ActionEngine } from '../src/actions.js';
 import { PATHS, ensureArtifactDirs } from '../src/paths.js';
+import { getTestBrowserExe } from './test-helper.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -119,7 +120,7 @@ async function runTestSuite() {
 
   // Use headless Edge for test bench battery to ensure zero interference with user's Brave
   console.log("🚀 Launching headless test runner...");
-  const edgeExe = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
+  const edgeExe = getTestBrowserExe();
   const browser = await chromium.launch({
     executablePath: edgeExe,
     headless: true,
@@ -237,10 +238,10 @@ async function runTestSuite() {
       action: 'type',
       ref: inputRef.ref,
       obs_id: obs3.obs_id,
-      text: "GodwynAgent"
+      text: "BrowserAgent"
     });
     const usernameValue = await page.$eval('#username', el => el.value);
-    recordTest(9, "Form Input Typing", usernameValue === "GodwynAgent", receiptType.changes.join("; "));
+    recordTest(9, "Form Input Typing", usernameValue === "BrowserAgent", receiptType.changes.join("; "));
 
     // -------------------------------------------------------------
     // Test 10: File Upload Handling

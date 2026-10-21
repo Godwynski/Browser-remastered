@@ -59,6 +59,12 @@ export class BrowserObserver {
       }
     }
 
+    if (meta.directives && meta.directives.length > 0) {
+      for (const d of meta.directives) {
+        lines.push(`📩 HUD DIRECTIVE: "${d.prompt || d}"`);
+      }
+    }
+
     if (lines.length > 0) lines.push('');
 
     // 1. Visible elements rendered in full detail
@@ -78,8 +84,8 @@ export class BrowserObserver {
       lines.push(`VISIBLE: (No interactive elements in current viewport)`);
     }
 
-    // 2. Offscreen Landmark Ledger: dense summary with valid refs (direct action auto-scrolls)
-    const hasOffscreen = offscreenAbove.length > 0 || offscreenBelow.length > 0;
+    // 2. Offscreen Landmark Ledger: dense summary with valid refs (pruned if visibleOnly)
+    const hasOffscreen = !meta.visibleOnly && (offscreenAbove.length > 0 || offscreenBelow.length > 0);
     if (hasOffscreen) {
       lines.push('');
       lines.push(`OFFSCREEN (direct action auto-scrolls):`);
@@ -153,10 +159,14 @@ export class BrowserObserver {
   async observe(page, options = {}) {
     const {
       includeScreenshot = false,
+      screenshotScope = null,
+      clip = null,
       maxElements = 60,
       format = 'compact',
       scope = null,
-      filter = 'interactive'
+      filter = 'interactive',
+      visibleOnly = false,
+      directives = []
     } = options;
 
     const obsId = `obs_${Date.now()}`;
@@ -264,7 +274,7 @@ export class BrowserObserver {
             }
           }
 
-          let query = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [tabindex="0"]';
+          let query = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [role="combobox"], [contenteditable="true"], [tabindex="0"]';
           if (filterMode === 'inputs') {
             query = 'input, textarea, select, [role="textbox"], [role="combobox"], [role="checkbox"]';
           } else if (filterMode === 'buttons_links') {
@@ -284,6 +294,32 @@ export class BrowserObserver {
             return matches;
           }
 
+          function getUniquePath(el) {
+            if (el.id) {
+              return `[id="${CSS.escape(el.id)}"]`;
+            }
+            const parts = [];
+            let cur = el;
+            while (cur && cur.nodeType === Node.ELEMENT_NODE && cur.tagName.toLowerCase() !== 'html') {
+              let name = cur.tagName.toLowerCase();
+              if (cur.id) {
+                parts.unshift(`[id="${CSS.escape(cur.id)}"]`);
+                break;
+              }
+              let parent = cur.parentElement;
+              if (parent) {
+                const siblings = Array.from(parent.children).filter(c => c.tagName.toLowerCase() === name);
+                if (siblings.length > 1) {
+                  const index = siblings.indexOf(cur) + 1;
+                  name += `:nth-of-type(${index})`;
+                }
+              }
+              parts.unshift(name);
+              cur = parent;
+            }
+            return parts.join(' > ');
+          }
+
           const items = [];
           const els = queryDeep(root);
           const vWidth = window.innerWidth || 1280;
@@ -291,32 +327,45 @@ export class BrowserObserver {
 
           for (const el of els) {
             const rect = el.getBoundingClientRect();
-            // Visible elements
-            if (rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden') {
-              const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('value') || '').trim();
-              const tag = el.tagName.toLowerCase();
-              const isFormInput = ['input', 'textarea', 'select'].includes(tag);
-              // Drop completely empty, unlabelled non-input nodes to save tokens
-              if (!text && !el.id && !el.name && !isFormInput) {
-                continue;
-              }
+            const tag = el.tagName.toLowerCase();
+            const isFileInput = tag === 'input' && el.type === 'file';
+            const style = window.getComputedStyle(el);
 
-              const inViewport = (rect.top >= 0 && rect.top <= vHeight && rect.left >= 0 && rect.left <= vWidth);
-
-              items.push({
-                tag,
-                role: el.getAttribute('role') || el.tagName.toLowerCase(),
-                name: text.slice(0, 100),
-                type: el.getAttribute('type') || undefined,
-                value: (el.value || '').slice(0, 100),
-                disabled: el.disabled || undefined,
-                id: el.id || undefined,
-                nameAttr: el.name || undefined,
-                inViewport,
-                top: Math.round(rect.top),
-                left: Math.round(rect.left)
-              });
+            // Strict interactive visibility pruning: skip invisible, hidden or 0-opacity elements
+            if (!isFileInput) {
+              if (rect.width <= 0 || rect.height <= 0) continue;
+              if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
             }
+
+            const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('value') || '').trim();
+            const isFormInput = ['input', 'textarea', 'select'].includes(tag);
+            // Drop completely empty, unlabelled non-input nodes to save tokens
+            if (!text && !el.id && !el.name && !isFormInput && !isFileInput) {
+              continue;
+            }
+
+            const inViewport = (rect.top >= 0 && rect.top <= vHeight && rect.left >= 0 && rect.left <= vWidth);
+            const cx = Math.round(rect.left + rect.width / 2);
+            const cy = Math.round(rect.top + rect.height / 2);
+
+            items.push({
+              tag,
+              role: el.getAttribute('role') || el.tagName.toLowerCase(),
+              name: text.slice(0, 100),
+              type: el.getAttribute('type') || undefined,
+              value: (el.value || '').slice(0, 100),
+              disabled: el.disabled || undefined,
+              id: el.id || undefined,
+              nameAttr: el.name || undefined,
+              uniqueSelector: getUniquePath(el),
+              centerX: cx,
+              centerY: cy,
+              inViewport,
+              top: Math.round(rect.top),
+              left: Math.round(rect.left),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            });
           }
 
           // Viewport-Priority Sorting: visible items first, then top-to-bottom
@@ -330,9 +379,10 @@ export class BrowserObserver {
         }, { max: maxElements - elements.length, scopeSelector: scope, filterMode: filter });
 
         for (const d of domElements) {
-          // If already discovered by ARIA in the main frame, augment with DOM metadata
+          // If already discovered by ARIA in the main frame, augment with DOM metadata (ensure 1-to-1 match)
           const existing = isMain ? elements.find(e => 
             e.frameIndex === null &&
+            !e.domMeta &&
             ((e.name && d.name && e.name.toLowerCase() === d.name.toLowerCase()) ||
              (e.role === 'textbox' && (d.tag === 'input' || d.tag === 'textarea') && (!e.name || e.name === d.name)))
           ) : null;
@@ -368,15 +418,41 @@ export class BrowserObserver {
       }
     }
 
-    // 4. Viewport screenshot (optional for efficiency)
+    // 4. Viewport or scoped region screenshot (saves 85%+ vision tokens when scoped)
     let screenshotBase64 = null;
+    let screenshotScopeInfo = 'viewport';
     if (includeScreenshot) {
       try {
-        const buffer = await page.screenshot({
-          type: 'jpeg',
-          quality: 75,
-          timeout: 5000
-        });
+        let buffer = null;
+        if (screenshotScope) {
+          const loc = page.locator(screenshotScope).first();
+          buffer = await loc.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 });
+          screenshotScopeInfo = `element:${screenshotScope}`;
+        } else if (clip) {
+          let clipRect = null;
+          if (Array.isArray(clip) && clip.length >= 4) {
+            clipRect = { x: clip[0], y: clip[1], width: clip[2], height: clip[3] };
+          } else if (clip && typeof clip === 'object' && clip.x !== undefined && clip.y !== undefined) {
+            clipRect = {
+              x: Math.round(clip.x),
+              y: Math.round(clip.y),
+              width: Math.round(clip.width || clip.w || 200),
+              height: Math.round(clip.height || clip.h || 200)
+            };
+          }
+          if (clipRect) {
+            buffer = await page.screenshot({ clip: clipRect, type: 'jpeg', quality: 75, timeout: 5000 });
+            screenshotScopeInfo = `clip:[${clipRect.x},${clipRect.y},${clipRect.width}x${clipRect.height}]`;
+          }
+        }
+
+        if (!buffer) {
+          buffer = await page.screenshot({
+            type: 'jpeg',
+            quality: 75,
+            timeout: 5000
+          });
+        }
         screenshotBase64 = buffer.toString('base64');
       } catch (err) {
         screenshotBase64 = null;
@@ -394,16 +470,19 @@ export class BrowserObserver {
       alerts,
       elements,
       elementMap,
-      screenshot: screenshotBase64
+      screenshot: screenshotBase64,
+      screenshotScope: screenshotScopeInfo
     };
 
     const compactOutput = this.formatCompact(elements, {
       title,
       url,
       alerts,
+      directives,
       scrollY: domState.scrollY,
       docHeight: domState.documentHeight,
-      obsId
+      obsId,
+      visibleOnly
     });
 
     return {
@@ -425,11 +504,13 @@ export class BrowserObserver {
         }
       },
       alerts,
+      directives,
       format,
       element_count: elements.length,
       elements_compact: compactOutput,
       elements: elements,
-      screenshot: screenshotBase64 ? `data:image/jpeg;base64,${screenshotBase64}` : null
+      screenshot: screenshotBase64 ? `data:image/jpeg;base64,${screenshotBase64}` : null,
+      screenshot_scope: screenshotBase64 ? screenshotScopeInfo : undefined
     };
   }
 

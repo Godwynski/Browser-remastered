@@ -11,8 +11,9 @@
     "test:battery": "node test/test-battery.js",
     "test:tokens": "node test/test-token-optimizations.js",
     "test:workflow": "node test/test-workflow.js",
+    "test:healing": "node test/test-self-healing.js",
     "test:cobrowse": "node test/test-battery.js",
-    "test:all": "npm run test:protocol && npm run test:tokens && npm run test:workflow && npm run test:battery && npm test"
+    "test:all": "npm run test:protocol && npm run test:tokens && npm run test:workflow && npm run test:healing && npm run test:battery && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",

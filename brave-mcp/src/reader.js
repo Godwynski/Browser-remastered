@@ -138,14 +138,13 @@ export class ContentReader {
 
             for (let rIdx = 0; rIdx < rows.length; rIdx++) {
               const row = rows[rIdx];
-              const ths = Array.from(row.querySelectorAll('th'));
-              const tds = Array.from(row.querySelectorAll('td'));
-              const cells = ths.length > 0 ? ths : tds;
+              const cells = Array.from(row.querySelectorAll('th, td'));
+              if (cells.length === 0) continue;
 
               const cellTexts = cells.map(c => c.textContent.trim().replace(/\|/g, '\\|') || ' ');
               tableMd += `| ${cellTexts.join(' | ')} |\n`;
 
-              if (!headersExtracted && (ths.length > 0 || rIdx === 0)) {
+              if (!headersExtracted && (row.querySelector('th') || rIdx === 0)) {
                 tableMd += `| ${cellTexts.map(() => '---').join(' | ')} |\n`;
                 headersExtracted = true;
               }

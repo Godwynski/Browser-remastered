@@ -6,9 +6,11 @@
   "scripts": {
     "start": "npm --prefix brave-mcp start",
     "test": "npm --prefix brave-mcp test",
+    "test:protocol": "npm --prefix brave-mcp run test:protocol",
     "test:battery": "npm --prefix brave-mcp run test:battery",
     "test:tokens": "npm --prefix brave-mcp run test:tokens",
     "test:workflow": "npm --prefix brave-mcp run test:workflow",
+    "test:healing": "npm --prefix brave-mcp run test:healing",
     "test:all": "npm --prefix brave-mcp run test:all",
     "audit": "node brave-mcp/scripts/cdp/audit-workspace.js",
     "telemetry": "node brave-mcp/src/telemetry-server.js"

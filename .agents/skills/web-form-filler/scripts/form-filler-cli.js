@@ -6,7 +6,7 @@ async function main() {
   let inlineData = null;
   let filePath = null;
   let autoSubmit = false;
-  let submitSelector = 'button[type="submit"], input[type="submit"], button:has-text("Submit"), button:has-text("Save")';
+  let submitSelector = 'button[type="submit"], input[type="submit"]';
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--data' && args[i + 1]) inlineData = args[++i];
@@ -62,7 +62,12 @@ async function main() {
 
     let submitted = false;
     if (submit) {
-      const btn = document.querySelector(submitSel);
+      let btn = null;
+      try { btn = document.querySelector(submitSel); } catch (_) {}
+      if (!btn) {
+        const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]'));
+        btn = buttons.find(b => /submit|save/i.test(b.innerText || b.value || ''));
+      }
       if (btn) {
         btn.click();
         submitted = true;

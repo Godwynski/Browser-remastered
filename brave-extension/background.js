@@ -41,14 +41,22 @@ if (typeof chrome !== 'undefined' && chrome.commands) {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (tab && tab.id && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('brave://')) {
-          await chrome.scripting.insertCSS({
+          const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            files: ['content/hud.css']
-          }).catch(() => {});
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ['content/hud.js']
-          }).catch(() => {});
+            func: () => {
+              const root = document.getElementById('antigravity-hud-root');
+              if (root) {
+                root.style.display = root.style.display === 'none' ? '' : 'none';
+                return true;
+              }
+              return false;
+            }
+          }).catch(() => []);
+
+          if (!results?.[0]?.result) {
+            await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['content/hud.css'] }).catch(() => {});
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/hud.js'] }).catch(() => {});
+          }
         }
       } catch (err) {
         console.warn('[Antigravity] Toggle HUD error:', err);

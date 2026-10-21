@@ -1,2 +1,2 @@
 @echo off
-"C:\Program Files\nodejs\node.exe" "%~dp0src\index.js"
+node "%~dp0src\index.js"
