@@ -25,11 +25,6 @@ Browser remastered/
 │   ├── launch-brave.cmd           # Batch launcher (double-click)
 │   ├── launch-brave.ps1           # PowerShell launcher
 │   └── create-connected-shortcut.ps1 # Permanent desktop shortcut generator
-├── brave-extension/               # Browser extension companion & floating HUD
-│   ├── manifest.json              # Manifest V3 extension
-│   ├── background.js              # Service worker
-│   ├── content/                   # Floating Mission Control HUD
-│   └── popup/                     # Extension popup controls
 ├── artifacts/                     # Ephemeral runtime screenshots, receipts, test runs (gitignored)
 └── .agents/skills/
     ├── browser-content-capture/   # Dynamic SPA & infinite scroll capture

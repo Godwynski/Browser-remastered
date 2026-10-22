@@ -8,17 +8,14 @@ These rules govern code structure, script organization, and agent behavior withi
 ## 🏛️ Directory Hierarchy Mandate
 
 ```
-Browser activity/
+Browser-remastered/
 ├── brave-mcp/                     # Playwright & CDP bridge server
 │   ├── src/                       # Core MCP server code & tool definitions
 │   ├── test/                      # Protocol & live test battery
 │   └── scripts/
 │       ├── cdp/                   # Port 9222 & CDP health checks
-│       ├── gdrive/                # Google Drive automation
-│       ├── social/                # Instagram / social automation
-│       └── scratch/               # One-off experimental scripts
+│       └── workflows/             # Zero-token compiled workflows
 ├── brave-launcher/                # Brave startup & shortcut utilities
-├── brave-extension/               # Floating HUD & browser companion
 └── artifacts/                     # Runtime test logs, screenshots & raw data
 ```
 

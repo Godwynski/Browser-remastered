@@ -11,10 +11,10 @@ Direct, evidence-grounded browser control bridge connecting **Antigravity / Gemi
 ---
 
 > [!IMPORTANT]
-> ### ⚠️ Project Scope & Architecture Separation
-> **All coursework, subject materials, and external academic assignments have been cleanly decoupled from this repository.**
-> - **This Repository (`Browser-activity`)**: Dedicated strictly to browser automation infrastructure, the CDP bridge MCP server, launcher utilities, companion extensions, and test suites.
-> - **Global Availability**: The browser MCP server configured here serves the **entire computer globally** via `~/.gemini/config/mcp_config.json`. Any workspace on your machine can automate Brave without duplicating code.
+> ### ⚠️ Production Architecture & Scope
+> **Dedicated strictly to high-performance browser automation infrastructure.**
+> - **This Repository (`Browser-remastered`)**: Production-ready CDP bridge MCP server, multi-browser launcher utilities, zero-token workflow engines, and comprehensive test suites.
+> - **Global Availability**: The browser MCP server configured here serves your entire system globally via `~/.gemini/config/mcp_config.json`. Any agent workspace on your machine can automate Brave without duplicating code.
 
 ---
 
@@ -42,7 +42,10 @@ graph TD
     subgraph Brave["Chromium Browser (Personal Profile)"]
         UW["User Tabs (Personal Browsing, Uninterrupted)"]
         AW["Agent Tabs (Dedicated Automated Workflows)"]
-        EXT["brave-extension (Floating Mission Control HUD)"]
+    end
+
+    subgraph Console["Mission Control Web Console"]
+        DASH["http://localhost:8765 (Live Logs & Directives)"]
     end
 
     AGY <-->|"MCP Protocol (stdio)"| CMD
@@ -52,7 +55,7 @@ graph TD
     BROWSER --> OBS
     BROWSER --> ACT
     ACT --> VER
-    TEL <-->|"HUD Port 8765"| EXT
+    TEL <-->|"Telemetry WebSocket & HTTP"| DASH
 ```
 
 ---
@@ -139,7 +142,7 @@ The MCP server is registered in your global configuration (`~/.gemini/config/mcp
       "command": "cmd.exe",
       "args": [
         "/c",
-        "C:\\path\\to\\Browser-activity\\brave-mcp\\run-mcp.cmd"
+        "C:\\path\\to\\Browser-remastered\\brave-mcp\\run-mcp.cmd"
       ]
     }
   }
@@ -163,8 +166,8 @@ You can easily run this MCP server and control browsers from the CLI or across o
 
 2. **Clone & Install**:
    ```bash
-   git clone https://github.com/Godwynski/Browser-activity.git
-   cd Browser-activity/brave-mcp
+   git clone https://github.com/Godwynski/Browser-remastered.git
+   cd Browser-remastered/brave-mcp
    npm install
    ```
 
@@ -314,7 +317,7 @@ Controls tab navigation and history.
 ## 📁 Repository Structure
 
 ```
-Browser-activity/
+Browser-remastered/
 ├── brave-mcp/                     # Core MCP Server & CDP Bridge
 │   ├── package.json               # Dependencies: @modelcontextprotocol/sdk, playwright-core, ws
 │   ├── run-mcp.cmd                # Launcher script called by global mcp_config.json
@@ -326,8 +329,9 @@ Browser-activity/
 │   │   ├── actions.js             # 5-tier self-healing action engine & coordinate resolver
 │   │   ├── verifier.js            # Action receipts & DOM state diffing
 │   │   ├── workflow.js            # High-speed pagination, bulk actions & script runner
-│   │   ├── telemetry-server.js    # WebSocket server for Mission Control HUD
-│   │   └── telemetry.js           # Lightweight logging client
+│   │   ├── telemetry-server.js    # WebSocket & HTTP server for Mission Control Console
+│   │   ├── telemetry.js           # Lightweight logging client
+│   │   └── public/                # Standalone Mission Control Web Console (http://localhost:8765)
 │   ├── scripts/                   # Modular automation scripts
 │   │   ├── cdp/                   # Port 9222 diagnostics & connection checks
 │   │   └── workflows/             # Zero-token compiled workflows (e.g. table-exporter.js)
@@ -348,11 +352,6 @@ Browser-activity/
 │   ├── launch-edge.cmd            # Double-click batch launcher for Microsoft Edge
 │   ├── launch-edge.ps1            # PowerShell launcher for Microsoft Edge
 │   └── create-connected-shortcut.ps1 # Permanent desktop shortcut generator
-├── brave-extension/               # Companion browser extension & HUD
-│   ├── manifest.json              # Manifest V3 extension definition
-│   ├── background.js              # Service worker hot-reloader
-│   ├── content/                   # Floating Mission Control HUD
-│   └── popup/                     # Mission Control popup UI
 ├── artifacts/                     # [GITIGNORED] Runtime screenshots, test runs & downloads
 ├── .agents/skills/                # Developer agent skills & automation playbooks
 │   ├── browser-content-capture/   # Dynamic SPA & infinite scroll capture
@@ -419,5 +418,5 @@ npm run test:all
 - **Fix**: Verify `~/.gemini/config/mcp_config.json` points to your local `brave-mcp\run-mcp.cmd` path with properly escaped backslashes.
 
 ### 4. Telemetry Port Conflict (Port 8765 in use)
-- **Cause**: Another background MCP server or HUD process is already using port 8765.
+- **Cause**: Another background MCP server or Mission Control process is already using port 8765.
 - **Fix**: The telemetry server automatically detects and attaches to the existing daemon cleanly without crashing the MCP protocol.

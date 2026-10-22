@@ -16,7 +16,6 @@ export class TelemetryServer {
     this.wss = null;
     this.clients = new Set();
     this.directives = [];
-    this.extWatcher = null;
     this.currentTask = {
       id: null,
       name: 'Idle',
@@ -176,27 +175,7 @@ export class TelemetryServer {
       });
 
       this.server.listen(this.port, '127.0.0.1', () => {
-        console.error(`📡 [Telemetry] Real-time HUD server listening on ws://localhost:${this.port}`);
-
-        // Auto-hot-reload file watcher for extension files
-        const extDir = path.join(WORKSPACE_ROOT, 'brave-extension');
-        if (fs.existsSync(extDir)) {
-          let reloadTimer = null;
-          try {
-            this.extWatcher = fs.watch(extDir, { recursive: true }, (eventType, filename) => {
-              if (filename && !filename.includes('node_modules') && !filename.endsWith('.tmp')) {
-                if (reloadTimer) clearTimeout(reloadTimer);
-                reloadTimer = setTimeout(() => {
-                  console.error(`⚡ [Telemetry] Change detected in brave-extension/${filename}. Broadcasting hot-reload...`);
-                  this.broadcast('HOT_RELOAD_EXTENSION', { file: filename });
-                }, 300);
-              }
-            });
-          } catch (e) {
-            console.error('[Telemetry] Could not start extension file watcher:', e.message);
-          }
-        }
-
+        console.error(`📡 [Telemetry] Real-time Mission Control server listening on ws://localhost:${this.port}`);
         resolve();
       });
 
@@ -289,10 +268,6 @@ export class TelemetryServer {
   }
 
   stop() {
-    if (this.extWatcher) {
-      this.extWatcher.close();
-      this.extWatcher = null;
-    }
     if (this.server) {
       this.server.close();
       this.server = null;
