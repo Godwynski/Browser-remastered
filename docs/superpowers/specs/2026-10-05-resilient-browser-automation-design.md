@@ -64,4 +64,3 @@ Add focused regression cases for hidden/disabled/partially visible elements, dup
 - Playwright actionability and auto-waiting: <https://playwright.dev/docs/actionability>
 - Page events, dialogs, popups, downloads, and file chooser: <https://playwright.dev/docs/api/class-page>
 - Download lifecycle and saving: <https://playwright.dev/docs/api/class-download>
-

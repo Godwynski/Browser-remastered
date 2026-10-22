@@ -13,6 +13,7 @@ Use this skill when you need visual verification (charts, captchas, confirmation
 ---
 
 ## 🚀 Key Advantages
+
 - **Drastic Token Savings**: Only encodes the pixels relevant to the question.
 - **Fast Visual Grounding**: Eliminates visual noise from browser toolbars, sidebars, and background banners.
 - **Artifact Persistence**: Automatically saves JPEG artifacts in `artifacts/screenshots/` for human review or multi-turn caching.
@@ -24,6 +25,7 @@ Use this skill when you need visual verification (charts, captchas, confirmation
 Invoke the compiled workflow script `crop-screenshot` via `brave_workflow`:
 
 ### 1. Crop by CSS Selector
+
 ```json
 {
   "action": "run_script",
@@ -36,6 +38,7 @@ Invoke the compiled workflow script `crop-screenshot` via `brave_workflow`:
 ```
 
 ### 2. Crop by Coordinate Clip
+
 ```json
 {
   "action": "run_script",
@@ -47,6 +50,7 @@ Invoke the compiled workflow script `crop-screenshot` via `brave_workflow`:
 ```
 
 ### Options
+
 | Parameter | Description | Default |
 | :--- | :--- | :--- |
 | `selector` | CSS selector of target element to crop | Optional |

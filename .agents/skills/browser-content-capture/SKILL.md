@@ -10,6 +10,7 @@ Use this skill when you need to extract dynamic, client-side rendered content (S
 ---
 
 ## 🚀 Key Advantages
+
 - **SPA & Dynamic Hydration**: Waits for network idle and framework hydration before extracting.
 - **Infinite Scroll & Lazy Loading**: Automatically scrolls to load deferred or virtualized items.
 - **Zero Token DOM Overhead**: Extracts structured content directly via browser evaluation without burning LLM context tokens.
@@ -20,6 +21,7 @@ Use this skill when you need to extract dynamic, client-side rendered content (S
 ## 🛠️ Usage
 
 ### CLI Execution
+
 Run the capture CLI with a URL or against the active Brave tab:
 
 ```bash
@@ -31,6 +33,7 @@ node .agents/skills/browser-content-capture/scripts/capture-cli.js --active --sc
 ```
 
 ### Options
+
 | Flag | Description | Default |
 | :--- | :--- | :--- |
 | `--url <url>` | Target URL to navigate and capture | active tab if omitted |
@@ -43,6 +46,7 @@ node .agents/skills/browser-content-capture/scripts/capture-cli.js --active --sc
 ---
 
 ## 💡 Best Practices
+
 1. Combine with `brave_read` when clean article Markdown is needed.
 2. For infinite lists (e.g. search results, social feeds), use `--scrolls 3` or `--scrolls 5` to trigger IntersectionObserver loaders.
 3. Save structured output directly to `artifacts/` for downstream analysis.

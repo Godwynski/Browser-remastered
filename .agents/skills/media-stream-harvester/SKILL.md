@@ -10,6 +10,7 @@ Use this skill when you need to download or extract direct media URLs (videos, a
 ---
 
 ## 🚀 Key Advantages
+
 - **Bypasses UI Wrappers**: Directly discovers hidden `<video>`, `<source>`, and HLS `.m3u8` manifests.
 - **Zero Token Overhead**: Discovers all media URLs via browser JavaScript evaluation in 1 turn.
 - **Filters Unwanted Assets**: Ignores UI tracking pixels and tiny icons, focusing on actual content.
@@ -32,6 +33,7 @@ Invoke the compiled workflow script `media-harvester` via `brave_workflow`:
 ```
 
 ### Options
+
 | Parameter | Description | Default |
 | :--- | :--- | :--- |
 | `filterType` | Filter media type: `all`, `video`, `audio`, `image`, `document` | `all` |

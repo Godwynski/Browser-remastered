@@ -10,6 +10,7 @@ Use this skill when interacting with modern websites that deploy anti-bot heuris
 ---
 
 ## 🚀 Key Advantages
+
 - **Human-Cadence Typing**: Injects realistic micro-delays (15ms–45ms) between keystrokes to pass behavioral biometrics.
 - **Universal Overlay & Cookie Consent Dismissal**: Automatically identifies and clicks common "Accept All", "Agree", or "Close" buttons on cookie banners and modal overlays.
 - **Scroll Physics**: Emulates natural mouse-wheel scrolls with deceleration rather than instantaneous coordinate jumps.

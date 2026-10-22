@@ -13,6 +13,7 @@ Use this skill when interacting with dynamic Single Page Applications (SPAs) whe
 ---
 
 ## 🚀 Key Advantages
+
 - **Eliminates Race Conditions**: Detects the exact DOM node insertion or class update instantly.
 - **Speeds Up Workflows**: Eliminates 3,000ms+ arbitrary sleeps per step; continues execution within ~15ms of event firing.
 - **Zero Token Cost**: Executed directly inside the browser engine using native `MutationObserver` via `brave_eval`.
@@ -22,6 +23,7 @@ Use this skill when interacting with dynamic Single Page Applications (SPAs) whe
 ## 🛠️ In-Page Waiting Recipes (via `brave_eval`)
 
 ### 1. Wait for Element to Appear (with Timeout)
+
 ```javascript
 await new Promise((resolve, reject) => {
   const selector = 'div[data-testid="search-results"]';
@@ -48,6 +50,7 @@ await new Promise((resolve, reject) => {
 ```
 
 ### 2. Wait for Loading Spinner or Skeleton to Disappear
+
 ```javascript
 await new Promise((resolve) => {
   const spinnerSelector = '.loading-spinner, .skeleton, [aria-busy="true"], .loader';
@@ -73,6 +76,7 @@ await new Promise((resolve) => {
 ```
 
 ### 3. Wait for Text or Price Update (Dynamic State Mutation)
+
 ```javascript
 await new Promise((resolve) => {
   const target = document.querySelector('#total-price') || document.querySelector('.status-badge');
@@ -100,6 +104,7 @@ await new Promise((resolve) => {
 ```
 
 ### 4. Wait for SPA Route Change (Client-Side Navigation)
+
 ```javascript
 await new Promise((resolve) => {
   const startUrl = window.location.href;

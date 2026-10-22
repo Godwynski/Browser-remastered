@@ -1,21 +1,23 @@
 # Agent Instructions & Developer Standards: Browser Remastered (`brave-mcp`)
 
 ## 🌐 Workspace Overview & Purpose
+
 This workspace is the dedicated developer repository for **Evidence-Grounded Brave Browser Agent (`brave-mcp`)**, the Chrome DevTools Protocol (CDP) bridge connecting AI agents (Antigravity / Gemini) directly to your running **Brave Browser**.
 
 ### ⚠️ Workspace Separation Notice: Decoupled Coursework
+
 > [!IMPORTANT]
 > **Academic Coursework Decoupled**:
 > All external coursework, subject folders, assignments, and academic skills have been separated into a dedicated external workspace.
-> 
-> When working in this repository (`Browser remastered`), the AI agent must **never** look for coursework or create assignment files. This repository is strictly for browser infrastructure and web automation engineering.
+>
+> When working in this repository (`Browser-remastered`), the AI agent must **never** look for coursework or create assignment files. This repository is strictly for browser infrastructure and web automation engineering.
 
 ---
 
 ## 🏛️ Repository Architecture
 
-```
-Browser remastered/
+```text
+Browser-remastered/
 ├── brave-mcp/                     # MCP Server & CDP Bridge Engine
 │   ├── src/                       # Core engine: browser.js, observer.js, actions.js, verifier.js, workflow.js, reader.js, index.js
 │   ├── scripts/                   # Modular automation scripts (cdp, workflows)
@@ -46,6 +48,7 @@ Browser remastered/
 ## 🛡️ Critical Agent Directives (Zero Tolerance)
 
 ### 1. Universal Web Automation & The 4-Tier Decision Protocol
+
 This tool is **not** site-specific. It is a universal browser engine that accommodates **ANY** website.
 To achieve **minimum code with maximum efficiency and minimum token usage**, follow this strict execution hierarchy:
 
@@ -55,12 +58,15 @@ To achieve **minimum code with maximum efficiency and minimum token usage**, fol
 4. **Tier 4 (Recurring Task Across Sessions / Custom Pipelines)**: Only synthesize a dedicated script in `brave-mcp/scripts/workflows/<name>.js` when an operation is executed repeatedly over time.
 
 ### 2. Never Open Secondary Browser Instances
+
 - The user's personal Brave browser is already running and connected via remote debugging port **9222**.
 - **NEVER** launch an `AgentProfile` or spawn secondary browser windows.
 - Always attach to the existing CDP session or use the registered `brave-control` MCP tools.
 
 ### 3. Scripts Organization Mandate
+
 All scripts must be placed in their appropriate subdirectory under `brave-mcp/scripts/`:
+
 - `brave-mcp/scripts/cdp/`: Port 9222 health checks and CDP diagnostics.
 - `brave-mcp/scripts/workflows/`: Reusable compiled workflow routines for recurring automation tasks across any website.
 - **NEVER** dump ad-hoc `.js`, `.py`, `.sh`, or `.cmd` scripts into the root workspace folder.

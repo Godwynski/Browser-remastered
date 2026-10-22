@@ -10,6 +10,7 @@ Use this skill when you need to fill out web forms (surveys, login inputs, searc
 ---
 
 ## 🚀 Key Advantages
+
 - **Single-Turn Batch Filling**: Submits all inputs in one batch, eliminating multi-turn latency and token overhead.
 - **Smart Field Matching**: Matches JSON key-value pairs to `<input>`, `<textarea>`, and `<select>` elements by ID, name attribute, label, or placeholder.
 - **Auto-Submission**: Optionally clicks the submit button after all inputs are filled.
@@ -19,6 +20,7 @@ Use this skill when you need to fill out web forms (surveys, login inputs, searc
 ## 🛠️ Usage
 
 ### CLI Execution
+
 ```bash
 # Fill a form using a JSON string
 node .agents/skills/web-form-filler/scripts/form-filler-cli.js --active --data '{"username":"demo_user","email":"demo@example.com"}' --submit
@@ -28,6 +30,7 @@ node .agents/skills/web-form-filler/scripts/form-filler-cli.js --active --file "
 ```
 
 ### Options
+
 | Flag | Description | Default |
 | :--- | :--- | :--- |
 | `--active` | Fill form on active tab | `true` |

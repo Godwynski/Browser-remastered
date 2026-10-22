@@ -13,7 +13,7 @@ This playbook governs how Antigravity automates tasks on **ANY website** with ma
 
 To achieve **minimum code with maximum efficiency and minimum token usage**, follow this strict decision hierarchy:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │ 1. SINGLE ACTION / READ?                                    │
 │    👉 Use atomic MCP tools: brave_read, brave_eval, brave_act│
@@ -74,6 +74,7 @@ Never run a multi-turn LLM loop to click "Next Page" or check 20 checkboxes. Use
 Only generate a script when a user requests a recurring task or when an operation is executed repeatedly across sessions.
 
 ### Step 1: Create the script in `brave-mcp/scripts/workflows/<name>.js`
+
 ```javascript
 import { BraveManager } from '../../src/browser.js';
 
@@ -96,12 +97,14 @@ export default run;
 ```
 
 ### Step 2: Execute via `brave_workflow` or CLI
+
 - **Via MCP**: Call `brave_workflow(action: 'run_script', scriptName: '<name>', params: { ... })`
 - **Via CLI**: `node brave-mcp/scripts/workflows/<name>.js`
 
 ---
 
 ## 💡 Universal Standards
+
 1. **Never hardcode specific sites**: Use accessible ARIA roles, semantic HTML tags, or dynamically inferred selectors so workflows work across any site.
 2. **Never open secondary browser windows**: Always attach to the user's running Brave session on CDP port 9222.
 3. **Compound Settlement**: Let `and_observe: true` handle post-action state updates automatically.

@@ -10,6 +10,7 @@ Use this skill when you need to extract structured tabular or repeating data (ta
 ---
 
 ## 🚀 Key Advantages
+
 - **Automatic Pattern Detection**: Detects tables, grid items, and repeated DOM patterns automatically without manual CSS selector tuning.
 - **Zero Token Cost**: Data is extracted, formatted, and written directly by in-browser JS evaluation; the LLM only consumes tokens on the final summary or schema.
 - **CSV & JSON Exports**: Export directly to disk for immediate data analysis, Pandas, or Excel import.
@@ -19,6 +20,7 @@ Use this skill when you need to extract structured tabular or repeating data (ta
 ## 🛠️ Usage
 
 ### CLI Execution
+
 ```bash
 # Scrape HTML tables into CSV
 node .agents/skills/smart-web-scraper/scripts/scrape-cli.js --active --type table --format csv --output artifacts/table_data.csv
@@ -31,6 +33,7 @@ node .agents/skills/smart-web-scraper/scripts/scrape-cli.js --active --type link
 ```
 
 ### Options
+
 | Flag | Description | Default |
 | :--- | :--- | :--- |
 | `--active` | Scrape from currently active Brave tab | `true` |

@@ -13,6 +13,7 @@ Use this skill when you need to process multiple URLs simultaneously (e.g. compa
 ---
 
 ## 🚀 Key Advantages
+
 - **Concurrent Execution**: Fetches 4–8 pages simultaneously using `Promise.all`.
 - **Zero Token Loops**: Eliminates back-and-forth LLM conversation turns.
 - **Auto-Cleanup**: Automatically closes background worker tabs upon completion, keeping your browser workspace clean.
@@ -40,6 +41,7 @@ Invoke the compiled workflow script `parallel-crawler` via `brave_workflow`:
 ```
 
 ### Options
+
 | Parameter | Description | Default |
 | :--- | :--- | :--- |
 | `urls` | Array of URLs to process concurrently | Required |

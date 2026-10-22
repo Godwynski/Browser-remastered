@@ -24,6 +24,7 @@ Use this skill when an action fails (e.g. click intercepted by an overlay, eleme
 ## 🛠️ Diagnostics & Auto-Recovery Recipes (via `brave_eval`)
 
 ### 1. Diagnose Element Obscuration (`elementFromPoint`)
+
 ```javascript
 ((selector) => {
   const target = document.querySelector(selector);
@@ -53,6 +54,7 @@ Use this skill when an action fails (e.g. click intercepted by an overlay, eleme
 ```
 
 ### 2. Auto-Scroll to Center (Prevent Sticky Header Obscuring)
+
 ```javascript
 ((selector) => {
   const el = document.querySelector(selector);
@@ -64,6 +66,7 @@ Use this skill when an action fails (e.g. click intercepted by an overlay, eleme
 ```
 
 ### 3. Pierce Shadow DOM to Find Hidden Elements
+
 ```javascript
 ((selector) => {
   function queryShadowRoot(root, sel) {
@@ -91,6 +94,7 @@ Use this skill when an action fails (e.g. click intercepted by an overlay, eleme
 ```
 
 ### 4. Synthetic Deep Click Fallback (Bypasses UI Pointer Interception)
+
 ```javascript
 ((selector) => {
   const el = document.querySelector(selector);

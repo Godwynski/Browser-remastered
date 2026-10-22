@@ -1,13 +1,14 @@
-# Workspace Rules: Browser Activity Tooling
+# Workspace Rules: Browser Remastered (`brave-mcp`)
 
 ## 🎯 Purpose
+
 These rules govern code structure, script organization, and agent behavior within the Brave MCP browser automation repository.
 
 ---
 
 ## 🏛️ Directory Hierarchy Mandate
 
-```
+```text
 Browser-remastered/
 ├── brave-mcp/                     # Playwright & CDP bridge server
 │   ├── src/                       # Core MCP server code & tool definitions
@@ -22,6 +23,7 @@ Browser-remastered/
 ---
 
 ## 🚫 Forbidden Practices (Zero Tolerance)
+
 1. **NO Wandering & Excessive Reading**: Never execute exploratory `list_dir` or recursive searches across the root workspace or `.agents/`.
 2. **NO New Browser Instances**: Never launch a new browser process or separate profile (`AgentProfile`). Always attach to the existing connected session on port 9222.
 3. **NO Ad-Hoc Scripts in Root**: All scripts must be housed in `brave-mcp/scripts/<category>/` or within their respective tool directory.
