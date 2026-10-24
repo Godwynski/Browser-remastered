@@ -11,6 +11,7 @@
     "test:tokens": "npm --prefix brave-mcp run test:tokens",
     "test:workflow": "npm --prefix brave-mcp run test:workflow",
     "test:healing": "npm --prefix brave-mcp run test:healing",
+    "test:fixes": "npm --prefix brave-mcp run test:fixes",
     "test:all": "npm --prefix brave-mcp run test:all",
     "audit": "node brave-mcp/scripts/cdp/audit-workspace.js",
     "telemetry": "node brave-mcp/src/telemetry-server.js"

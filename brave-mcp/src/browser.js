@@ -49,11 +49,17 @@ export class BraveManager {
       try {
         ensureArtifactDirs();
         const filename = download.suggestedFilename() || `download-${Date.now()}`;
-        const targetPath = path.join(downloadDir, filename);
+        const targetPath = path.join(PATHS.downloads, filename);
         await download.saveAs(targetPath);
+        page._lastDownload = { filename, path: targetPath, timestamp: Date.now() };
       } catch (err) {
         console.warn(`[BraveManager] Page download capture error: ${err.message}`);
       }
+    });
+
+    page.on('dialog', async (dialog) => {
+      page._lastDialog = { message: dialog.message(), type: dialog.type(), timestamp: Date.now() };
+      await dialog.accept().catch(() => {});
     });
   }
 
@@ -125,10 +131,13 @@ export class BraveManager {
       throw new Error("No open tabs found in Brave.");
     }
 
-    // Check visible tab concurrently across all pages for zero-latency resolution
-    const visibilities = await Promise.all(
-      pages.map(p => p.evaluate(() => document.visibilityState === 'visible').catch(() => false))
-    );
+    // Check visible tab concurrently across all pages with 400ms timeout race to prevent hanging
+    const checkVisibility = p => Promise.race([
+      p.evaluate(() => document.visibilityState === 'visible'),
+      new Promise(r => setTimeout(() => r(false), 400))
+    ]).catch(() => false);
+
+    const visibilities = await Promise.all(pages.map(checkVisibility));
     const activeIndex = visibilities.findIndex(v => v === true);
     let targetPage = null;
     if (activeIndex !== -1) {
@@ -153,7 +162,8 @@ export class BraveManager {
 
   /**
    * Resolves target page:
-   * - index (number): specific tab index
+   * - number: 0-based tab index
+   * - string: search by URL substring or title substring
    * - otherwise: user's current active tab
    */
   async getTargetPage(target = 'active', index = null) {
@@ -163,27 +173,45 @@ export class BraveManager {
     }
 
     if (index !== null && index !== undefined) {
-      if (index < 0 || index >= pages.length) {
-        throw new Error(`Tab index ${index} out of range (0 to ${pages.length - 1}).`);
+      if (typeof index === 'number' || (typeof index === 'string' && /^\d+$/.test(index.trim()))) {
+        const numIdx = typeof index === 'number' ? index : parseInt(index.trim(), 10);
+        if (numIdx < 0 || numIdx >= pages.length) {
+          throw new Error(`Tab index ${numIdx} out of range (0 to ${pages.length - 1}).`);
+        }
+        const page = pages[numIdx];
+        await this._setupPageDownloads(page);
+        return page;
       }
-      const page = pages[index];
-      await this._setupPageDownloads(page);
-      return page;
+
+      if (typeof index === 'string' && index.trim().length > 0) {
+        const q = index.trim().toLowerCase();
+        for (const p of pages) {
+          if (p.url().toLowerCase().includes(q)) {
+            await this._setupPageDownloads(p);
+            return p;
+          }
+        }
+        for (const p of pages) {
+          const title = (await p.title().catch(() => '')).toLowerCase();
+          if (title.includes(q)) {
+            await this._setupPageDownloads(p);
+            return p;
+          }
+        }
+        throw new Error(`No open tab found matching "${index}". Run brave_tabs(action: 'list') to view available tabs.`);
+      }
     }
 
     return await this.getActivePage();
   }
 
   /**
-   * Sets the active tab by index.
+   * Sets the active tab by index or title/URL query.
    */
   async setActivePage(index, { bringToFront = true } = {}) {
+    const page = await this.getTargetPage('active', index);
     const pages = await this.getPages();
-    if (index < 0 || index >= pages.length) {
-      throw new Error(`Tab index ${index} out of range (0 to ${pages.length - 1}).`);
-    }
-    this.activePageIndex = index;
-    const page = pages[index];
+    this.activePageIndex = pages.indexOf(page);
     if (bringToFront) {
       await page.bringToFront().catch(() => {});
     }
@@ -207,18 +235,16 @@ export class BraveManager {
   }
 
   /**
-   * Closes a tab by index.
+   * Closes a tab by index or title/URL query.
    */
   async closeTab(index) {
+    const page = await this.getTargetPage('active', index);
     const pages = await this.getPages();
-    if (index < 0 || index >= pages.length) {
-      throw new Error(`Tab index ${index} out of range.`);
-    }
     // Prevent closing the browser window when only 1 tab exists
     if (pages.length <= 1) {
       await this.newTab('about:blank');
     }
-    await pages[index].close();
+    await page.close();
   }
 
   /**
@@ -232,9 +258,12 @@ export class BraveManager {
         let url = 'about:blank';
         let isVisible = false;
         try {
-          title = await p.title();
+          title = await Promise.race([p.title(), new Promise(r => setTimeout(() => r('Untitled'), 400))]);
           url = p.url();
-          isVisible = await p.evaluate(() => document.visibilityState === 'visible').catch(() => false);
+          isVisible = await Promise.race([
+            p.evaluate(() => document.visibilityState === 'visible'),
+            new Promise(r => setTimeout(() => r(false), 400))
+          ]).catch(() => false);
         } catch (e) {}
 
         return {

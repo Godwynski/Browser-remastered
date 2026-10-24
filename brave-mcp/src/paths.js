@@ -37,6 +37,20 @@ export function ensureArtifactDirs() {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
+
+  // shortcut: 7-day expiry for ephemeral screenshots/temp files, upgrade to LRU if disk constrained
+  const maxAge = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  for (const purgeDir of [PATHS.screenshots, PATHS.temp]) {
+    try {
+      if (fs.existsSync(purgeDir)) {
+        for (const file of fs.readdirSync(purgeDir)) {
+          const filePath = path.join(purgeDir, file);
+          if (now - fs.statSync(filePath).mtimeMs > maxAge) fs.unlinkSync(filePath);
+        }
+      }
+    } catch (_) {}
+  }
 }
 
 /**

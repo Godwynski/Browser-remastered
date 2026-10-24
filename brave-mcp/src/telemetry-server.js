@@ -82,7 +82,10 @@ export class TelemetryServer {
 
         if (url.pathname === '/api/directives/submit' && req.method === 'POST') {
           let body = '';
-          req.on('data', chunk => { body += chunk; });
+          req.on('data', chunk => {
+            body += chunk;
+            if (body.length > 1e6) { req.destroy(); res.writeHead(413).end(); }
+          });
           req.on('end', () => {
             try {
               const { prompt, url: pageUrl, title } = JSON.parse(body);
@@ -110,7 +113,10 @@ export class TelemetryServer {
         // 3. Telemetry Log API
         if (url.pathname === '/api/telemetry/log' && req.method === 'POST') {
           let body = '';
-          req.on('data', chunk => { body += chunk; });
+          req.on('data', chunk => {
+            body += chunk;
+            if (body.length > 1e6) { req.destroy(); res.writeHead(413).end(); }
+          });
           req.on('end', () => {
             try {
               const data = JSON.parse(body);
@@ -149,7 +155,14 @@ export class TelemetryServer {
         res.end('Not Found');
       });
 
-      this.wss = new WebSocketServer({ server: this.server });
+      this.wss = new WebSocketServer({
+        server: this.server,
+        verifyClient: (info, cb) => {
+          const origin = info.req.headers.origin || '';
+          const ok = !origin || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin.startsWith('chrome-extension://');
+          cb(ok, ok ? 200 : 403, ok ? undefined : 'Forbidden origin');
+        }
+      });
 
       this.wss.on('error', (err) => {
         if (err.code !== 'EADDRINUSE') {

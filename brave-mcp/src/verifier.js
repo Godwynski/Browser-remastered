@@ -17,6 +17,8 @@ export class StateVerifier {
       title,
       readyState,
       fingerprint,
+      lastDownloadTime: page._lastDownload?.timestamp || 0,
+      lastDialogTime: page._lastDialog?.timestamp || 0,
       timestamp: Date.now()
     };
   }
@@ -27,8 +29,14 @@ export class StateVerifier {
   async captureAfterState(page, beforeState, options = {}) {
     const { includeScreenshot = false } = options;
 
-    // Fast deterministic stabilization: requestAnimationFrame + micro-wait instead of blind 350ms sleep
-    await page.evaluate(() => new Promise(r => requestAnimationFrame(() => setTimeout(r, 60)))).catch(() => {});
+    // Fast deterministic stabilization: rAF for foreground, setTimeout for background to avoid freezing
+    await page.evaluate(() => new Promise(r => {
+      if (document.visibilityState === 'visible') {
+        requestAnimationFrame(() => setTimeout(r, 60));
+      } else {
+        setTimeout(r, 50);
+      }
+    })).catch(() => {});
 
     const afterUrl = page.url();
     const afterTitle = await page.title().catch(() => '');
@@ -80,6 +88,10 @@ export class StateVerifier {
     // Detect dynamic DOM mutation (SPA state change without URL change)
     if (beforeState.fingerprint && afterState.fingerprint && beforeState.fingerprint !== afterState.fingerprint) {
       changes.push("DOM structure mutated (dynamic element or content update)");
+    }
+
+    if (extraDetails.download) {
+      changes.push(`Downloaded file "${extraDetails.download.filename}" to ${extraDetails.download.path}`);
     }
 
     if (extraDetails.dialogMessage) {

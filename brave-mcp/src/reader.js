@@ -48,7 +48,7 @@ export class ContentReader {
       // 2. Strip non-content / boilerplate elements
       const unwantedSelectors = [
         'script', 'style', 'noscript', 'svg', 'canvas', 'iframe',
-        'nav', 'footer', 'header', 'form', '[aria-hidden="true"]',
+        'nav', 'footer', 'body > header', '[role="banner"]', 'form', '[aria-hidden="true"]',
         '.advertisement', '.ad', '.ads', '.cookie-banner', '.cookie-consent',
         '.sidebar', '#sidebar', '.comments', '#comments', '.social-share',
         '.popup', '.modal', '.banner'

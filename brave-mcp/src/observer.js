@@ -337,7 +337,7 @@ export class BrowserObserver {
               if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
             }
 
-            const rawText = el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('value') || '';
+            const rawText = el.getAttribute('aria-label') || el.innerText || el.getAttribute('placeholder') || el.getAttribute('value') || '';
             const text = rawText.replace(/\s+/g, ' ').trim();
             const isFormInput = ['input', 'textarea', 'select'].includes(tag);
             // Drop completely empty, unlabelled non-input nodes to save tokens
@@ -350,6 +350,7 @@ export class BrowserObserver {
             const cy = Math.round(rect.top + rect.height / 2);
 
             items.push({
+              _el: el,
               tag,
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
               name: text.slice(0, 100),
@@ -358,7 +359,6 @@ export class BrowserObserver {
               disabled: el.disabled || undefined,
               id: el.id || undefined,
               nameAttr: el.name || undefined,
-              uniqueSelector: getUniquePath(el),
               centerX: cx,
               centerY: cy,
               inViewport,
@@ -376,7 +376,12 @@ export class BrowserObserver {
             return a.top - b.top;
           });
 
-          return items.slice(0, max);
+          const sliced = items.slice(0, max);
+          for (const item of sliced) {
+            item.uniqueSelector = getUniquePath(item._el);
+            delete item._el;
+          }
+          return sliced;
         }, { max: maxElements - elements.length, scopeSelector: scope, filterMode: filter });
 
         for (const d of domElements) {
@@ -461,7 +466,7 @@ export class BrowserObserver {
     }
 
     // Cache the observation internally (full structured maps preserved)
-    this.currentObservation = {
+    const observationRecord = {
       obsId,
       url,
       title,
@@ -474,6 +479,11 @@ export class BrowserObserver {
       screenshot: screenshotBase64,
       screenshotScope: screenshotScopeInfo
     };
+
+    this.currentObservation = observationRecord;
+    if (page) {
+      page._currentObservation = observationRecord;
+    }
 
     const compactOutput = this.formatCompact(elements, {
       title,
@@ -519,26 +529,27 @@ export class BrowserObserver {
 
   /**
    * Resolves an ephemeral reference (e.g. "e2") against the current observation.
-   * Validates obs_id if provided.
+   * Validates obs_id if provided. Supports per-page observation resolution for cross-tab isolation.
    */
-  resolveRef(ref, expectedObsId = null) {
-    if (!this.currentObservation) {
+  resolveRef(ref, expectedObsId = null, page = null) {
+    const obs = (page && page._currentObservation) ? page._currentObservation : this.currentObservation;
+    if (!obs) {
       throw new Error("No active observation found. Call brave_observe first.");
     }
 
-    if (expectedObsId && this.currentObservation.obsId !== expectedObsId) {
+    if (expectedObsId && obs.obsId !== expectedObsId) {
       throw new Error(
         `Stale observation error: Action was submitted with obs_id '${expectedObsId}', ` +
-        `but active observation is '${this.currentObservation.obsId}'. ` +
+        `but active observation is '${obs.obsId}'. ` +
         `The page has updated. Call brave_observe to inspect the new page state.`
       );
     }
 
-    const item = this.currentObservation.elementMap.get(ref);
+    const item = obs.elementMap.get(ref);
     if (!item) {
-      const validRefs = Array.from(this.currentObservation.elementMap.keys()).join(', ');
+      const validRefs = Array.from(obs.elementMap.keys()).join(', ');
       throw new Error(
-        `Element reference '${ref}' not found in observation '${this.currentObservation.obsId}'.\n` +
+        `Element reference '${ref}' not found in observation '${obs.obsId}'.\n` +
         `Available refs: [${validRefs}].\n` +
         `If the page changed, call brave_observe to get a fresh observation.`
       );
@@ -549,7 +560,10 @@ export class BrowserObserver {
   /**
    * Invalidate current observation (e.g. after navigation or mutation).
    */
-  invalidate() {
+  invalidate(page = null) {
+    if (page && page._currentObservation) {
+      page._currentObservation = null;
+    }
     this.currentObservation = null;
   }
 }

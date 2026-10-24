@@ -30,7 +30,8 @@ export class WorkflowEngine {
       scrollMode = false,
       maxPages = 5,
       maxItems = 100,
-      pageDelay = 800
+      pageDelay = 800,
+      fields = null
     } = options;
 
     const allItems = [];
@@ -43,7 +44,7 @@ export class WorkflowEngine {
       await page.waitForTimeout(300);
 
       // Extract current page items
-      const pageItems = await page.evaluate(({ selector, limit }) => {
+      const pageItems = await page.evaluate(({ selector, limit, customFields }) => {
         const elements = Array.from(document.querySelectorAll(selector));
         const extracted = [];
 
@@ -53,6 +54,16 @@ export class WorkflowEngine {
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 && rect.height === 0) continue;
           if (el.tagName.toLowerCase() === 'tr' && el.querySelector('th') && !el.querySelector('td')) continue;
+
+          if (customFields && typeof customFields === 'object') {
+            const item = {};
+            for (const [key, sel] of Object.entries(customFields)) {
+              const matched = el.querySelector(sel);
+              item[key] = matched ? (matched.innerText || matched.textContent || '').trim() : undefined;
+            }
+            extracted.push(item);
+            continue;
+          }
 
           const titleEl = el.querySelector('h1, h2, h3, h4, h5, .title, [class*="title"], strong, a');
           const linkEl = el.querySelector('a[href]') || (el.tagName.toLowerCase() === 'a' ? el : null);
@@ -69,7 +80,7 @@ export class WorkflowEngine {
           });
         }
         return extracted;
-      }, { selector: itemSelector, limit: maxItems - allItems.length });
+      }, { selector: itemSelector, limit: maxItems - allItems.length, customFields: fields });
 
       let newItemsAdded = 0;
       for (const item of pageItems) {
@@ -168,10 +179,11 @@ export class WorkflowEngine {
         if (await item.isVisible().catch(() => false)) {
           if (action === 'click') {
             await item.click({ timeout: 3000 });
+            executedCount++;
           } else if (action === 'check') {
             await item.check({ timeout: 3000 });
+            executedCount++;
           }
-          executedCount++;
           if (delayMs > 0) await page.waitForTimeout(delayMs);
         }
       } catch (err) {

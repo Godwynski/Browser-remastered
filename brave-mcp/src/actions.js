@@ -241,7 +241,7 @@ export class ActionEngine {
         }
 
         if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'click'.");
-        const refItem = this.observer.resolveRef(ref, obs_id);
+        const refItem = this.observer.resolveRef(ref, obs_id, page);
 
         // --- 5-Tier Self-Healing Click Execution ---
         let clickSucceeded = false;
@@ -327,7 +327,7 @@ export class ActionEngine {
           await page.mouse.click(cx, cy);
           if (params.clear !== false) {
             const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-            await page.keyboard.press(`${modifier}+A`).catch(() => {});
+            await page.keyboard.press(`${modifier}+a`).catch(() => {});
             await page.keyboard.press('Backspace').catch(() => {});
           }
           await page.keyboard.type(text, { delay: params.humanLike ? 25 : 5 });
@@ -339,10 +339,15 @@ export class ActionEngine {
         }
 
         if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'type'.");
-        const refItem = this.observer.resolveRef(ref, obs_id);
+        const refItem = this.observer.resolveRef(ref, obs_id, page);
         const locator = this.getLocatorForRef(page, refItem);
 
-        if (params.humanLike) {
+        if (params.clear === false) {
+          await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
+          await locator.click({ timeout: 2000, force: true }).catch(() => {});
+          await page.keyboard.press('End').catch(() => {});
+          await page.keyboard.type(text, { delay: params.humanLike ? 25 : 5 });
+        } else if (params.humanLike) {
           await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
           await locator.click({ timeout: 3000, force: true }).catch(() => {});
           await page.keyboard.type(text, { delay: 25 });
@@ -398,7 +403,7 @@ export class ActionEngine {
               await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
               await locator.click({ timeout: 3000, force: true }).catch(() => {});
               const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-              await page.keyboard.press(`${modifier}+A`).catch(() => {});
+              await page.keyboard.press(`${modifier}+a`).catch(() => {});
               await page.keyboard.type(text, { delay: 10 });
             }
           }
@@ -445,7 +450,7 @@ export class ActionEngine {
         }
 
         if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'hover'.");
-        const refItem = this.observer.resolveRef(ref, obs_id);
+        const refItem = this.observer.resolveRef(ref, obs_id, page);
         const locator = this.getLocatorForRef(page, refItem);
         try {
           await locator.hover({ timeout: 3500 });
@@ -469,14 +474,14 @@ export class ActionEngine {
         let end = parseCoordinate(params.endCoordinate, params.endX, params.endY);
 
         if (!start && params.startRef) {
-          const item = this.observer.resolveRef(params.startRef, obs_id);
+          const item = this.observer.resolveRef(params.startRef, obs_id, page);
           const locator = this.getLocatorForRef(page, item);
           const box = await locator.boundingBox().catch(() => null);
           if (box) start = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
         }
 
         if (!end && params.endRef) {
-          const item = this.observer.resolveRef(params.endRef, obs_id);
+          const item = this.observer.resolveRef(params.endRef, obs_id, page);
           const locator = this.getLocatorForRef(page, item);
           const box = await locator.boundingBox().catch(() => null);
           if (box) end = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
@@ -498,8 +503,8 @@ export class ActionEngine {
 
       case 'select_option': {
         if (!ref) throw new Error("Parameter 'ref' is required for action 'select_option'.");
-        if (!value) throw new Error("Parameter 'value' is required for action 'select_option'.");
-        const refItem = this.observer.resolveRef(ref, obs_id);
+        if (value === undefined || value === null) throw new Error("Parameter 'value' is required for action 'select_option'.");
+        const refItem = this.observer.resolveRef(ref, obs_id, page);
         const locator = this.getLocatorForRef(page, refItem);
         try {
           await locator.selectOption(value, { timeout: 3500 });
@@ -522,7 +527,7 @@ export class ActionEngine {
       case 'upload_file': {
         if (!ref) throw new Error("Parameter 'ref' is required for action 'upload_file'.");
         if (!filePaths || !Array.isArray(filePaths)) throw new Error("Parameter 'filePaths' (array of string paths) is required for action 'upload_file'.");
-        const refItem = this.observer.resolveRef(ref, obs_id);
+        const refItem = this.observer.resolveRef(ref, obs_id, page);
         const locator = this.getLocatorForRef(page, refItem);
         try {
           await locator.setInputFiles(filePaths, { timeout: 4000 });
@@ -550,9 +555,9 @@ export class ActionEngine {
       if (beforeState.url !== afterState.url || afterState.readyState !== 'complete') {
         await page.waitForLoadState('domcontentloaded', { timeout: 3500 }).catch(() => {});
       } else {
-        // Fast micro-settlement for dynamic SPA transitions, animation frames & microtasks
+        // Fast micro-settlement: handle background tabs so they do not freeze on requestIdleCallback
         await page.evaluate(() => new Promise(r => {
-          if ('requestIdleCallback' in window) {
+          if (document.visibilityState === 'visible' && 'requestIdleCallback' in window) {
             window.requestIdleCallback(r, { timeout: 120 });
           } else {
             setTimeout(r, 50);
@@ -563,9 +568,12 @@ export class ActionEngine {
     } else {
       // Invalidate stale observation references if URL navigated to a new page
       if (!suppressInvalidate && beforeState.url !== afterState.url) {
-        this.observer.invalidate();
+        this.observer.invalidate(page);
       }
     }
+
+    const hasDownload = page._lastDownload && page._lastDownload.timestamp > (beforeState?.lastDownloadTime || 0);
+    const hasDialog = page._lastDialog && page._lastDialog.timestamp > (beforeState?.lastDialogTime || 0);
 
     const receipt = this.verifier.createReceipt(
       {
@@ -576,7 +584,11 @@ export class ActionEngine {
       },
       beforeState,
       afterState,
-      { elementChange }
+      {
+        elementChange,
+        download: hasDownload ? page._lastDownload : undefined,
+        dialogMessage: hasDialog ? page._lastDialog.message : undefined
+      }
     );
 
     if (nextObservation) {

@@ -39,7 +39,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       {
         name: 'brave_tabs',
         description:
-          'List, switch, create, close, or focus tabs in your running Brave Browser.',
+          'List, switch, create, close, or focus tabs in your running Brave Browser. Supports matching tabs by numeric index, URL substring, or title substring.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -50,8 +50,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               default: 'list'
             },
             index: {
-              type: 'integer',
-              description: 'Tab index to switch to, focus, or close (0-based index)'
+              description: 'Tab index (0-based) or tab title/URL substring to switch to, focus, or close'
+            },
+            query: {
+              type: 'string',
+              description: 'Optional filter query to match open tabs by title or URL (for action "list")'
             },
             url: {
               type: 'string',
@@ -60,6 +63,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             bringToFront: {
               type: 'boolean',
               description: 'Whether to bring the tab visually to the front (default false)',
+              default: false
+            },
+            and_observe: {
+              type: 'boolean',
+              description: 'When action is "new", whether to immediately return observation of the new tab (default false)',
               default: false
             }
           }
@@ -374,14 +382,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               default: 'agent'
             },
             tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index to navigate'
+              description: 'Optional specific tab index (0-based) or tab title/URL substring'
             },
             action: {
               type: 'string',
               enum: ['goto', 'reload', 'back', 'forward'],
               description: "Navigation action (default 'goto')",
               default: 'goto'
+            },
+            and_observe: {
+              type: 'boolean',
+              description: 'Whether to automatically wait for settlement and return observation of the new page in 1 turn (default true)',
+              default: true
+            },
+            format: {
+              type: 'string',
+              enum: ['compact', 'json'],
+              description: 'Output format when and_observe is true (default "compact")',
+              default: 'compact'
             },
             timeout: {
               type: 'integer',
@@ -437,6 +455,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: 'Maximum total items to collect (default 100)',
               default: 100
             },
+            fields: {
+              type: 'object',
+              description: 'Optional dictionary mapping custom output keys to CSS selectors inside itemSelector (for paginate_extract)'
+            },
             pageDelay: {
               type: 'integer',
               description: 'Delay in ms between page transitions (default 800)',
@@ -491,7 +513,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const action = args?.action || 'list';
 
         if (action === 'list') {
-          const tabs = await brave.listTabs();
+          let tabs = await brave.listTabs();
+          if (args?.query) {
+            const q = args.query.toLowerCase();
+            tabs = tabs.filter(t => (t.title && t.title.toLowerCase().includes(q)) || (t.url && t.url.toLowerCase().includes(q)));
+          }
           return {
             content: [
               {
@@ -509,12 +535,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             throw new Error("Parameter 'index' or 'tabIndex' is required for action 'switch'.");
           }
           const page = await brave.setActivePage(targetIdx, { bringToFront: args.bringToFront ?? true });
+          const pages = await brave.getPages();
+          const activeIdx = pages.indexOf(page);
+          observer.invalidate(page);
           const title = await page.title().catch(() => '');
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ success: true, activeTabIndex: targetIdx, title, url: page.url() }, null, 2)
+                text: JSON.stringify({ success: true, activeTabIndex: activeIdx, title, url: page.url() }, null, 2)
               }
             ]
           };
@@ -522,11 +551,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (action === 'new') {
           const page = await brave.newTab(args.url || 'about:blank');
+          const pages = await brave.getPages();
+          const tabIndex = pages.indexOf(page);
+          let observation = null;
+          if (args?.and_observe && args.url && args.url !== 'about:blank') {
+            observation = await observer.observe(page, { format: 'compact' });
+          }
           return {
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ success: true, url: page.url() }, null, 2)
+                text: JSON.stringify({
+                  success: true,
+                  tabIndex,
+                  url: page.url(),
+                  observation: observation ? observation.elements_compact : undefined
+                }, null, 2)
               }
             ]
           };
@@ -551,6 +591,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             throw new Error("Parameter 'index' or 'tabIndex' is required for action 'close'.");
           }
           await brave.closeTab(targetIdx);
+          observer.invalidate();
           const tabs = await brave.listTabs();
           return {
             content: [
@@ -762,14 +803,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        return {
-          content: [
-            {
-              type: 'text',
-              text: resultText
-            }
-          ]
-        };
+        const content = [
+          {
+            type: 'text',
+            text: resultText
+          }
+        ];
+
+        if (lastReceipt?.screenshot) {
+          content.push({
+            type: 'text',
+            text: `[Post-action screenshot: ${lastReceipt.screenshot.slice(0, 100)}... (${lastReceipt.screenshot.length} chars)]`
+          });
+        }
+
+        return { content };
       }
 
       case 'brave_act': {
@@ -826,10 +874,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'brave_navigate': {
-
         const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
         const action = args?.action || 'goto';
         const timeout = args?.timeout || 15000;
+        const andObserve = args?.and_observe !== false;
 
         let beforeUrl = page.url();
         let status = 'navigated';
@@ -849,28 +897,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await page.goBack({ waitUntil: 'domcontentloaded', timeout });
         } else if (action === 'forward') {
           await page.goForward({ waitUntil: 'domcontentloaded', timeout });
+        } else {
+          throw new Error(`Unknown navigate action '${action}'. Supported: goto, reload, back, forward.`);
         }
 
-        observer.invalidate();
+        observer.invalidate(page);
         const afterUrl = page.url();
         const title = await page.title().catch(() => '');
+
+        let nextObservation = null;
+        if (andObserve) {
+          nextObservation = await observer.observe(page, { format: args?.format || 'compact' });
+        }
+
+        let resultText = '';
+        if (args?.format === 'json') {
+          resultText = JSON.stringify(
+            {
+              target: args?.target || 'agent',
+              action,
+              status,
+              beforeUrl,
+              afterUrl,
+              title,
+              nextObservation
+            },
+            null,
+            2
+          );
+        } else {
+          resultText = `OK: Navigated [${action}] to ${afterUrl} ("${title}")\n`;
+          if (nextObservation) {
+            resultText += `\n${nextObservation.elements_compact}`;
+          }
+        }
 
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(
-                {
-                  target: args?.target || 'agent',
-                  action,
-                  status,
-                  beforeUrl,
-                  afterUrl,
-                  title
-                },
-                null,
-                2
-              )
+              text: resultText
             }
           ]
         };
@@ -887,7 +953,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             scrollMode: args?.scrollMode ?? false,
             maxPages: args?.maxPages || 5,
             maxItems: args?.maxItems || 100,
-            pageDelay: args?.pageDelay || 800
+            pageDelay: args?.pageDelay || 800,
+            fields: args?.fields || null
           });
           return {
             content: [
