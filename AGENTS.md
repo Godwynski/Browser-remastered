@@ -79,14 +79,14 @@ Antigravity controls Brave via the following 8 MCP tools registered in `mcp_conf
 
 | Tool | Primary Purpose | Key Parameters |
 | :--- | :--- | :--- |
-| `brave_tabs` | Manage and inspect open tabs | `action` (`list`, `switch`, `new`, `close`, `focus`), `index`, `url` |
-| `brave_observe` | Extract hybrid spatial DOM/ARIA state with minimal token footprint | `target` (`agent` / `user`), `scope`, `filter`, `format` (`compact`/`json`), `includeScreenshot` |
-| `brave_read` | Dedicated zero-DOM article and table extraction as clean Markdown | `target`, `scope`, `maxLength` (saves ~90% tokens on reading tasks) |
-| `brave_act` | Perform browser actions with automatic compound observation | `action`, `ref` (ephemeral ID e.g. `e1`), `text`, `and_observe` (default `true`) |
-| `brave_batch_act` | Execute multiple actions sequentially without LLM loops | `actions` (array of action objects), `and_observe` (default `true`), `target` |
-| `brave_workflow` | High-speed pagination, bulk actions, and compiled workflow routines | `action` (`paginate_extract`, `bulk_action`, `run_script`), `itemSelector`, `nextSelector` |
-| `brave_eval` | Execute direct in-page JavaScript for instant zero-token scraping | `script` (JS string), `target`, `frameIndex` |
-| `brave_navigate` | Direct tab navigation | `url`, `action` (`goto`, `reload`, `back`, `forward`), `target` |
+| `brave_tabs` | Manage, inspect, and filter open tabs | `action` (`list`, `switch`, `new`, `close`, `focus`), `index` (number or title/URL substring), `query`, `url`, `and_observe` |
+| `brave_observe` | Extract hybrid spatial DOM/ARIA state with minimal token footprint | `target`, `tabIndex`, `scope`, `filter`, `format` (`compact`/`json`), `includeScreenshot` |
+| `brave_read` | Dedicated zero-DOM article and table extraction as clean Markdown | `target`, `tabIndex`, `scope`, `maxLength` (saves ~90% tokens on reading tasks) |
+| `brave_act` | Perform browser actions with automatic compound observation | `action`, `ref` (ephemeral ID e.g. `e1`), `text`, `clear`, `and_observe` (default `true`) |
+| `brave_batch_act` | Execute multiple actions sequentially without LLM loops | `actions` (array of action objects), `and_observe` (default `true`), `tabIndex` |
+| `brave_workflow` | High-speed pagination, bulk actions, and compiled workflow routines | `action` (`paginate_extract`, `bulk_action`, `run_script`), `itemSelector`, `nextSelector`, `fields` |
+| `brave_eval` | Execute direct in-page JavaScript for instant zero-token scraping | `script` (JS string), `tabIndex`, `frameIndex` |
+| `brave_navigate` | Direct tab navigation with 1-turn compound observation | `url`, `action` (`goto`, `reload`, `back`, `forward`), `and_observe` (default `true`), `tabIndex` |
 
 ---
 
@@ -102,5 +102,6 @@ npm run test:tokens    # Token reduction (79%+ savings), compact notation & aler
 npm run test:workflow  # Universal pagination, bulk action & compiled script test
 npm run test:healing   # 5-tier self-healing action engine & overlay auto-dismissal
 npm run test:battery   # 14-point critical guarantee test battery
+npm run test:fixes     # Cross-tab isolation, background tab speed & receipt tracking
 npm run test:all       # Run entire comprehensive test suite
 ```
