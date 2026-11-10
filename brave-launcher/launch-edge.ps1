@@ -62,7 +62,7 @@ if ($EdgeProcesses) {
         $EdgeProcesses | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 1
         Write-Host "🚀 Relaunching your personal Edge profile with port $Port..." -ForegroundColor Cyan
-        $ArgsStr = "--remote-debugging-port=$Port --remote-allow-origins=* `"--user-data-dir=$UserData`" --restore-last-session"
+        $ArgsStr = "--remote-debugging-port=$Port --disable-background-timer-throttling --disable-renderer-backgrounding `"--user-data-dir=$UserData`" --restore-last-session"
         Start-Process -FilePath $EdgeExe -ArgumentList $ArgsStr
     } else {
         Write-Host "Cancelled." -ForegroundColor Red
@@ -70,7 +70,7 @@ if ($EdgeProcesses) {
     }
 } else {
     Write-Host "🚀 Launching Edge with port $Port..." -ForegroundColor Cyan
-    $ArgsStr = "--remote-debugging-port=$Port --remote-allow-origins=* `"--user-data-dir=$UserData`" --restore-last-session"
+    $ArgsStr = "--remote-debugging-port=$Port --disable-background-timer-throttling --disable-renderer-backgrounding `"--user-data-dir=$UserData`" --restore-last-session"
     Start-Process -FilePath $EdgeExe -ArgumentList $ArgsStr
 }
 

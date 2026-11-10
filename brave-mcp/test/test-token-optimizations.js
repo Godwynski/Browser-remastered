@@ -109,7 +109,7 @@ async function testTokenOptimizations() {
     throw new Error("Failed to capture system alert banner!");
   }
   console.log(`   Captured Alert: "${obsCompact.alerts[0]}"`);
-  if (!obsCompact.elements_compact.includes("⚠️ PAGE ALERT:")) {
+  if (!obsCompact.elements_compact.includes("! Notice: Registration")) {
     throw new Error("elements_compact did not prominently render the page alert!");
   }
   console.log("   ✅ Alert Sentinel captured and prioritized page warning!");

@@ -1,44 +1,25 @@
+// Live check against the user's running browser on port 9222. Read-only: lists tabs and
+// observes the tab the user is looking at. Does not click, type, focus or navigate.
 import { BraveManager } from '../src/browser.js';
 import { BrowserObserver } from '../src/observer.js';
 
-async function test() {
-  console.log("🔍 Checking connection to Brave Browser on CDP port 9222...");
+const brave = new BraveManager(process.env.CDP_URL || 'http://127.0.0.1:9222');
+const observer = new BrowserObserver();
 
-  const brave = new BraveManager('http://127.0.0.1:9222');
-  const observer = new BrowserObserver();
+try {
+  let t = Date.now();
+  const tabs = await brave.listTabs();
+  console.log(`✅ Connected in ${Date.now() - t}ms. ${tabs.length} tab(s):`);
+  for (const tab of tabs) console.log(`   ${tab.id}${tab.isActive ? '*' : ' '} ${tab.title.slice(0, 60)}`);
 
-  try {
-    const tabs = await brave.listTabs();
-    console.log(`✅ Connected to Brave successfully! Found ${tabs.length} open tab(s):`);
-    tabs.forEach(t => {
-      console.log(`  [${t.index}] ${t.isActive ? '⭐ ' : '   '}${t.title} (${t.url})`);
-    });
-
-    const activePage = await brave.getActivePage();
-    console.log(`\n🔍 Performing tri-source observation on active tab...`);
-    const observation = await observer.observe(activePage, { includeScreenshot: false });
-
-    console.log(`✅ Observation successful!`);
-    console.log(`   Obs ID: ${observation.obs_id}`);
-    console.log(`   Title: ${observation.tab.title}`);
-    console.log(`   URL: ${observation.tab.url}`);
-    console.log(`   Interactive Elements Discovered: ${observation.elements.length}`);
-    
-    if (observation.elements.length > 0) {
-      console.log(`\nSample Interactive Elements:`);
-      observation.elements.slice(0, 10).forEach(e => {
-        console.log(`   [${e.ref}] <${e.role}> ${e.name ? `"${e.name}"` : ''} ${e.value ? `value="${e.value}"` : ''}`);
-      });
-    }
-
-    console.log(`\n🎉 brave-mcp is fully operational and ready for Antigravity!`);
-    process.exit(0);
-  } catch (err) {
-    console.error(`\n❌ Could not connect to Brave:\n${err.message}`);
-    console.log(`\n👉 Solution: Run 'brave-launcher\\launch-brave.cmd' to launch Brave with remote debugging.`);
-    process.exit(1);
-  }
+  const page = await brave.getActivePage();
+  t = Date.now();
+  const obs = await observer.observe(page, { tabId: brave.tabId(page) });
+  console.log(`\n✅ Observed active tab in ${Date.now() - t}ms (${obs.element_count} elements, ~${Math.round(obs.elements_compact.length / 3.8)} tokens):`);
+  console.log(obs.elements_compact.split('\n').slice(0, 12).map(l => '   ' + l).join('\n'));
+  process.exit(0);
+} catch (err) {
+  console.error(`❌ ${err.message}`);
+  console.log(`👉 Start the browser with brave-launcher\\launch-brave.cmd (remote debugging on port 9222).`);
+  process.exit(1);
 }
-
-test();
-

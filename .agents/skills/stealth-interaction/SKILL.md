@@ -56,5 +56,5 @@ Run this snippet via `brave_eval` to dismiss intrusive cookie banners, GDPR prom
 ## 🛡️ Anti-Detection Best Practices
 
 1. **Leverage User Profile & Brave Shields**: Because `brave-mcp` connects to your running personal Brave browser on port 9222, Brave Shields automatically blocks trackers and ads, while your existing profile passes Cloudflare checks natively.
-2. **Avoid Rapid Multi-Click Spams**: Space out navigation and high-frequency clicks using `brave_batch_act` with `delayMs: 250` or `brave_act` with standard human pauses.
+2. **Avoid Rapid Multi-Click Spams**: Space out navigation and high-frequency clicks by adding `{ "action": "wait", "ms": 250 }` steps between actions in one `brave_act` call.
 3. **Use `humanLike: true` in `brave_act`**: When typing into sensitive search or login fields, `humanLike: true` dispatches keyboard events with organic human jitter.

@@ -1,466 +1,192 @@
-# Evidence-Grounded Brave Browser Agent (`brave-mcp`)
+# Brave Co-Browsing Agent (`brave-mcp`)
 
-[![MCP Protocol](https://img.shields.io/badge/MCP-1.6.1-blue.svg)](https://modelcontextprotocol.io/)
-[![Playwright Core](https://img.shields.io/badge/Playwright-1.50.1-green.svg)](https://playwright.dev/)
-[![Browsers](https://img.shields.io/badge/Browsers-Brave%20%7C%20Edge%20%7C%20Chrome-orange.svg)](#-quick-start-guide)
-[![Co-Browsing](https://img.shields.io/badge/Co--Browsing-Isolated%20Tabs-purple.svg)](#-key-capabilities--features)
-[![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-brightgreen.svg)](#-testing--diagnostics-protocol)
+[![MCP](https://img.shields.io/badge/MCP-SDK%201.30-blue.svg)](https://modelcontextprotocol.io/)
+[![Playwright Core](https://img.shields.io/badge/Playwright-1.63-green.svg)](https://playwright.dev/)
+[![Browsers](https://img.shields.io/badge/Browsers-Brave%20%7C%20Edge%20%7C%20Chrome-orange.svg)](#-quick-start)
 
-Direct, evidence-grounded browser control bridge connecting **Antigravity / Gemini** directly to your active **Brave Browser** session via Playwright and the Chrome DevTools Protocol (CDP).
+An MCP server that lets an AI agent (Gemini, Claude, Antigravity, Cursor, any MCP client) work in **your already-open browser at the same time as you**: same logins, same tabs, no second browser. It works the same way on every website and is tuned for small, fast models: minimum tokens per step, fewest round trips.
 
 ---
 
-> [!IMPORTANT]
-> **Production Architecture & Scope**
->
-> Dedicated strictly to high-performance browser automation infrastructure:
->
-> - **This Repository (`Browser-remastered`)**: Production-ready CDP bridge MCP server, multi-browser launcher utilities, zero-token workflow engines, and comprehensive test suites.
-> - **Global Availability**: The browser MCP server configured here serves your entire system globally via `~/.gemini/config/mcp_config.json`. Any agent workspace on your machine can automate Brave without duplicating code.
-
----
-
-## 🏛️ System Architecture
+## How it works
 
 ```mermaid
 graph TD
-    subgraph AI["Antigravity / Gemini Agent"]
-        AGY["Antigravity IDE / CLI"]
-    end
-
-    subgraph Config["Global MCP Layer"]
-        CMD["run-mcp.cmd (Node.js Stdio Pipe)"]
-    end
-
-    subgraph Bridge["brave-mcp Engine (Port 9222)"]
-        INDEX["src/index.js (MCP Server)"]
-        BROWSER["src/browser.js (Playwright CDP Bridge)"]
-        OBS["src/observer.js (Tri-Source Observer)"]
-        ACT["src/actions.js (5-Tier Action Engine)"]
-        VER["src/verifier.js (Action Receipts & Diffing)"]
-        TEL["src/telemetry-server.js (WebSocket Daemon)"]
-    end
-
-    subgraph Brave["Chromium Browser (Personal Profile)"]
-        UW["User Tabs (Personal Browsing, Uninterrupted)"]
-        AW["Agent Tabs (Dedicated Automated Workflows)"]
-    end
-
-    subgraph Console["Mission Control Web Console"]
-        DASH["http://localhost:8765 (Live Logs & Directives)"]
-    end
-
-    AGY <-->|"MCP Protocol (stdio)"| CMD
-    CMD <--> INDEX
-    INDEX --> BROWSER
-    BROWSER <-->|"CDP Port 9222"| Brave
-    BROWSER --> OBS
-    BROWSER --> ACT
-    ACT --> VER
-    TEL <-->|"Telemetry WebSocket & HTTP"| DASH
+    AI["Any MCP agent (Gemini Flash, Claude, ...)"] <-->|"MCP stdio, 6 tools"| IDX["src/index.js"]
+    IDX --> BM["browser.js: attach over CDP, sticky agent tab, stable tab ids"]
+    IDX --> ACT["actions.js: exact element handles, self-healing, wait/eval/dialog"]
+    ACT --> VER["verifier.js: deterministic settle, new-text capture, user-activity guard"]
+    IDX --> OBS["observer.js: stable refs, full or delta output"]
+    OBS --> PA["page-agent.js (runs in every frame, one call per observe)"]
+    IDX --> RD["reader.js: Markdown + network JSON"]
+    BM <-->|"CDP 127.0.0.1:9222"| BR["Your Brave (your profile, your tabs)"]
 ```
 
----
+### What makes it fast and cheap
 
-## 🌟 Key Capabilities & Features
+| | Before (v1) | Now (v2) |
+| :--- | :--- | :--- |
+| Tool schemas sent every request | ~3,700 tokens (8 tools) | **~1,740 tokens** (6 tools) |
+| Reply after an action | full element list (~350–1,500 tokens) | **only what changed** (often 5–60 tokens) |
+| CDP round trips per click | ~14 sequential | **~4** (one in-page call observes all of a frame) |
+| Observe, real sites (avg of 12) | n/a | **26 ms**, ~356 tokens |
+| Element targeting | rebuilt CSS path (wrong element on repeated labels) | **exact element handle**, stable across observations |
 
-### 1. Parallel Co-Browsing (Zero Interruption)
+- **Delta replies.** Refs like `e12` stay valid for the element's lifetime. After an action the agent gets `+` new elements, `~` changed ones, `-` gone ones, and `text: "Saved"` for new page text, instead of the whole page again.
+- **No-observe actions.** `ref` also accepts visible text (`"Sign in"`), `role:text` (`"button:Save"`) or `css:#id`, so known flows don't need an observe call at all.
+- **One call for whole flows.** `brave_act` takes `steps` (goto, type, select, click, wait, eval...). It stops at the first failure and returns the current state, so the agent can recover without an extra call.
+- **Deterministic settle.** It waits for "no DOM mutations for 150 ms and no same-site XHR/fetch in flight", polling from Node, so it works in background tabs where page timers are throttled. Ads and trackers are ignored.
+- **Network reading.** `brave_read network:true` lists the JSON the site itself loaded; `response:n` returns one body. On app-like sites this is often 10× cheaper than reading the page.
+- **Modal focus.** When a modal dialog is open, observation lists only the modal.
 
-- Operates inside dedicated, automated **Agent Tabs**.
-- You can watch YouTube, read articles, or type in your personal tabs without the AI stealing focus, minimizing your windows, or hijacking mouse pointers.
+### Built for sharing the browser with you
 
-### 2. Full Personal Profile Preservation
+- **The agent keeps its own tab.** You can switch tabs freely; the agent keeps working where it was. New tabs open in the background. It never steals focus unless asked (`focus`).
+- **Stable tab ids** (`t1`, `t2`...) survive you opening, closing and reordering tabs.
+- **Your dialogs stay yours.** Plain Playwright auto-dismisses every `alert/confirm` (and auto-accepts "Leave site?") in all your tabs while connected. This server keeps them open for you. Only dialogs caused by the agent's own actions are answered, and each one is reported.
+- **Your downloads stay yours.** It attaches with `noDefaults`, so downloads keep going to your normal folder (they are reported, not redirected).
+- **It won't type over you.** If you're typing or clicking in the agent's tab, it waits for you to pause (up to 2.5 s) or tells the model you're busy.
+- **You can see what it touches.** A brief purple outline flashes on each element the agent acts on (`BRAVE_MCP_HIGHLIGHT=0` to disable).
 
-- Reuses your actual browser profile (`Default`), preserving active logins, session cookies, bookmarks, extensions, and password managers.
-- No dummy test profiles or repeated login CAPTCHAs.
+### Works on any website
 
-### 3. Brave Shields Ad & Tracker Immunity
-
-- Automatically leverages Brave Shields to block intrusive cookie consent modals, paywalls, banner ads, and redirect trackers that frequently derail AI agents.
-
-### 4. 5-Tier Self-Healing Action Engine
-
-- Automatically recovers from common browser interaction traps without multi-turn LLM failures:
-  - **Tier 1 (Nested & SVG Elements)**: Resolves pointer-events disabled child nodes to their interactive parent button/link.
-  - **Tier 2 (ContentEditable Rich Text)**: Detects modern rich text editors and dispatches direct input events.
-  - **Tier 3 (Overlay & Modal Auto-Dismissal)**: Auto-detects and dismisses cookie consent banners using text heuristics.
-  - **Tier 4 (Numeric & Complex IDs)**: Escapes unconventional element IDs (e.g. `123-btn`) to prevent querySelector syntax crashes.
-  - **Tier 5 (Direct Coordinate Fallback)**: Bypasses DOM entirely using exact `[x, y]` coordinates for Canvas, WebGL, SVG, charts, and maps.
-
-### 5. Token-Optimized Spatial Observation (~79% Savings)
-
-- Emits dense, single-line structured syntax for interactive elements.
-- Drastically reduces context window consumption compared to raw HTML dumps or verbose JSON trees.
-
-### 6. Visual Region Cropping (85%+ Vision Token Savings)
-
-- Supports `screenshotScope` and `clip` bounding boxes to capture only the relevant element or container rather than full-screen 1080p images.
-
-### 7. Action Receipts & Evidence Diffing
-
-- Every execution returns an evidence-grounded receipt comparing:
-  - Before/after URL and page title
-  - DOM mutation confirmation
-  - Action settlement indicators
+There is no site-specific code. Handled generically: shadow DOM, same- and cross-origin iframes, React/Vue click handlers on plain `<div>`s (detected via `cursor:pointer`), hidden styled checkboxes (clicked via their label), custom dropdowns, custom upload buttons (native file chooser), `contenteditable` editors, SPAs that scroll inside a `<div>`, `display:contents` layouts, whole-page `<form>` sites (ASP.NET, portals), and consent banners in 12+ languages, where it prefers **reject / necessary-only** first. Tested against Wikipedia, GitHub, MDN, BBC, DuckDuckGo, YouTube, Amazon, w3schools, gov.uk and Hacker News (`node test/bench-sites.js`).
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Quick start
 
-### 1-Click Universal Setup (Any PC)
+1. **`setup.cmd`** installs dependencies and registers `brave-control` in `~/.gemini/config/mcp_config.json`.
+2. **`launch.cmd`** (or `brave-launcher\launch-brave.cmd`) starts Brave, Chrome or Edge with remote debugging on port 9222, using your normal profile and restoring your session. If the port is already open it does nothing.
 
-On any new computer, simply run:
+> [!WARNING]
+> **Never add `--remote-allow-origins=*`.** It lets any website you visit connect to the debugging port and control your logged-in browser. This server connects from Node and doesn't need it. Older versions of these launchers added it: if you started Brave that way, restart it with the current launcher (and re-run `create-connected-shortcut.ps1` if you use the desktop shortcut).
 
-1. **`setup.cmd`** (Double-click):
-   - Automatically installs all MCP dependencies (`npm install`).
-   - Automatically registers `brave-control` in your global Antigravity config (`~/.gemini/config/mcp_config.json`).
-2. **`launch.cmd`** (Double-click):
-   - Auto-detects **Brave**, **Google Chrome**, or **Microsoft Edge** and launches with CDP debugging enabled (port 9222).
-   - Or specify browser: `launch.cmd brave`, `launch.cmd chrome`, or `launch.cmd edge`.
+The launchers also pass `--disable-background-timer-throttling --disable-renderer-backgrounding`, so sites keep responding at full speed while the agent works in a background tab.
 
----
-
-### Manual Launchers Reference (Port 9222)
-
-If you prefer launching individual browsers manually:
-
-#### Brave Browser
-
-- **Batch (Windows)**: Double-click `brave-launcher\launch-brave.cmd`
-- **PowerShell**: `.\brave-launcher\launch-brave.ps1`
-- **Permanent Desktop Shortcut**: Run `powershell -ExecutionPolicy Bypass -File .\brave-launcher\create-connected-shortcut.ps1`
-
-#### Google Chrome
-
-- **Batch (Windows)**: Double-click `brave-launcher\launch-chrome.cmd`
-
-#### Microsoft Edge
-
-- **Batch (Windows)**: Double-click `brave-launcher\launch-edge.cmd`
-- **PowerShell**: `.\brave-launcher\launch-edge.ps1`
-
-> [!TIP]
-> **Edge Optimization**: Open `edge://settings/system` in Edge and turn **OFF** *"Startup boost"* and *"Continue running background extensions and apps when Microsoft Edge is closed"*. This ensures Edge fully terminates when closed and allows the debug flag to bind cleanly.
-
----
-
-### Step 2: Global Antigravity MCP Configuration
-
-The MCP server is registered in your global configuration (`~/.gemini/config/mcp_config.json`):
+### Register with any MCP client
 
 ```json
-{
-  "mcpServers": {
-    "brave-control": {
-      "command": "cmd.exe",
-      "args": [
-        "/c",
-        "C:\\path\\to\\Browser-remastered\\brave-mcp\\run-mcp.cmd"
-      ]
-    }
-  }
-}
+{ "mcpServers": { "brave-control": { "command": "node", "args": ["<repo>/brave-mcp/src/index.js"] } } }
 ```
 
-*Because this configuration is global, any workspace in Antigravity has automatic access to `brave-control`.*
+- Claude Code: `claude mcp add brave-control node <repo>/brave-mcp/src/index.js`
+- Antigravity on Windows can also use `cmd.exe /c <repo>\brave-mcp\run-mcp.cmd`.
+- The server sends its own usage rules in the MCP `instructions` field, so the agent knows the workflow without any extra prompt.
+
+### macOS / Linux
+
+```bash
+"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" --remote-debugging-port=9222 --restore-last-session
+brave-browser --remote-debugging-port=9222 --restore-last-session
+curl http://127.0.0.1:9222/json/version
+```
+
+### Browser on another machine
+
+Don't expose port 9222 on your network (anyone who can reach it controls the browser). Tunnel it instead, then point the server at the tunnel:
+
+```bash
+ssh -N -L 9222:127.0.0.1:9222 user@machine-a
+CDP_URL=http://127.0.0.1:9222 node brave-mcp/src/index.js
+```
 
 ---
 
-## 💻 Multi-Machine & CLI Setup Guide
+## 🛠️ The 6 tools
 
-You can easily run this MCP server and control browsers from the CLI or across other computers.
-
-### Scenario A: Running on Another Computer (CLI / Local Agent)
-
-1. **Install Prerequisites**:
-   - [Node.js](https://nodejs.org/) (v18 or higher)
-   - Git
-   - Brave, Microsoft Edge, or Google Chrome
-
-2. **Clone & Install**:
-
-   ```bash
-   git clone https://github.com/Godwynski/Browser-remastered.git
-   cd Browser-remastered/brave-mcp
-   npm install
-   ```
-
-3. **Start the Browser on Port 9222**:
-   - **Windows**: Run `..\brave-launcher\launch-brave.cmd` or `..\brave-launcher\launch-edge.cmd`
-   - **macOS (Edge / Brave)**:
-
-     ```bash
-     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" --remote-debugging-port=9222 --remote-allow-origins=* --restore-last-session
-     ```
-
-   - **Linux (Edge / Brave)**:
-
-     ```bash
-     brave-browser --remote-debugging-port=9222 --remote-allow-origins=* --restore-last-session
-     ```
-
-   - **Verify Connectivity**:
-
-     ```bash
-     curl http://127.0.0.1:9222/json/version
-     ```
-
-4. **Connect Your Preferred CLI / Agent**:
-   - **Antigravity CLI / IDE (`agy`)**:
-     Add to `~/.gemini/config/mcp_config.json`:
-
-     ```json
-     {
-       "mcpServers": {
-         "brave-control": {
-           "command": "node",
-           "args": ["<path-to-repo>/brave-mcp/src/index.js"]
-         }
-       }
-     }
-     ```
-
-   - **Claude Code CLI**:
-
-     ```bash
-     claude mcp add brave-control node <path-to-repo>/brave-mcp/src/index.js
-     ```
-
-   - **Cursor / Windsurf / Codex**:
-     Add standard MCP server entry: Command `node`, Args `["<path-to-repo>/brave-mcp/src/index.js"]`.
-
----
-
-### Scenario B: Remote Control Over Network (Browser on Machine A, CLI on Machine B)
-
-If your browser runs on **Machine A** (`192.168.1.50`) and your CLI runs on **Machine B**:
-
-1. On **Machine A**, run Edge or Brave with `--remote-debugging-port=9222 --remote-allow-origins=*` (ensure your firewall allows port 9222 inbound on your local network).
-2. On **Machine B**, set the `CDP_URL` environment variable:
-
-   ```bash
-   # Windows (PowerShell)
-   $env:CDP_URL = "http://192.168.1.50:9222"
-   node src/index.js
-
-   # Linux / macOS
-   export CDP_URL="http://192.168.1.50:9222"
-   node src/index.js
-   ```
-
----
-
-## 🛠️ The 8 Core MCP Tools Reference
-
-| Tool | Primary Purpose | Key Parameters |
+| Tool | Purpose | Main parameters |
 | :--- | :--- | :--- |
-| [`brave_tabs`](#1-brave_tabs) | Manage & inspect open tabs | `action`, `index`, `url`, `bringToFront` |
-| [`brave_observe`](#2-brave_observe) | Token-efficient hybrid spatial DOM/ARIA observation | `target`, `scope`, `filter`, `format`, `includeScreenshot`, `screenshotScope`, `clip` |
-| [`brave_read`](#3-brave_read) | Zero-DOM article & table extraction as Markdown (~90% token savings) | `target`, `scope`, `maxLength` |
-| [`brave_act`](#4-brave_act) | Execute browser actions with 5-tier self-healing & direct coordinates | `action`, `ref`, `coordinate`, `text`, `key`, `drag`, `button`, `and_observe` |
-| [`brave_batch_act`](#5-brave_batch_act) | Sequential execution without LLM latency + compound observation | `actions` (array of actions), `and_observe` (default `true`), `target` |
-| [`brave_workflow`](#6-brave_workflow) | Repetitive pagination loops, bulk actions & compiled routines (0 token loops) | `action`, `itemSelector`, `nextSelector`, `selector`, `bulkType`, `scriptName` |
-| [`brave_eval`](#7-brave_eval) | Direct in-page JavaScript execution for instant scraping | `script`, `target`, `frameIndex` |
-| [`brave_navigate`](#8-brave_navigate) | Direct tab navigation & history | `url`, `action`, `target` |
+| `brave_tabs` | list / switch / new / close / focus | `action`, `tab`, `url` |
+| `brave_observe` | interactive elements, viewport first | `scope`, `filter`, `max`, `visible_only`, `screenshot`, `labels`, `crop` |
+| `brave_read` | page as Markdown, or the site's network JSON | `scope`, `offset`, `max`, `network`, `response` |
+| `brave_act` | one action or `steps`, then a delta | `action`, `ref`, `text`, `enter`, `value`, `key`, `files`, `xy`, `to`, `url`, `dir`, `gone`, `ms`, `script`, `accept`, `steps`, `observe` |
+| `brave_eval` | run JS, get JSON back (bulk extraction) | `script`, `frame` |
+| `brave_workflow` | loops with no LLM turns | `paginate_extract`, `bulk_action`, `run_script` |
+
+`tab` accepts a tab id (`t3`), an index, or URL/title text. Omit it to stay on the agent's tab.
+
+**Observation format**
+
+```text
+# Checkout | shop.example.com/cart | t2 | y0/2400 | modal "Sign in"
+! Card number is invalid
+e3 textbox:email "Email" ="ada@example.com"
+e4 checkbox "Remember me" [checked]
+e5 button "Continue" [disabled]
+below:
+e9 link "Privacy"
+```
+
+**Actions:** `click`, `type`, `press`, `select`, `upload`, `hover`, `scroll`, `drag`, `goto`, `back`, `forward`, `reload`, `wait` (`text` / `gone` / `ref` / `url` / `ms`), `eval`, `dialog` (`accept`).
+
+**Example: a whole login in one call**
+
+```json
+{ "steps": [
+  { "action": "goto", "url": "example.com/login" },
+  { "action": "type", "ref": "Email", "text": "ada@example.com" },
+  { "action": "click", "ref": "button:Continue" },
+  { "action": "wait", "text": "Welcome" }
+] }
+```
+
+Old tool names (`brave_batch_act`, `brave_navigate`) and old parameter names (`tabIndex`, `coordinate`, `pressEnter`, `filePaths`, `select_option`...) still work; they're just not advertised, so they cost no tokens.
 
 ---
 
-### 1. `brave_tabs`
-
-Inspects, switches, creates, or closes tabs across personal and agent windows.
-
-- `action`: `"list"` (default), `"switch"`, `"new"`, `"close"`, `"focus"`
-- `index`: 0-based tab index
-- `url`: Destination URL for new tabs
-- `bringToFront`: `boolean` (default `false` to avoid stealing user focus)
-
-### 2. `brave_observe`
-
-Extracts structured interactive element state with hybrid spatial partitioning (viewport items in full detail, offscreen landmark ledger) and live page alert detection.
-
-- `target`: `"agent"` (default) or `"user"` (user's active tab)
-- `format`: `"compact"` (default, dense plaintext syntax saving ~79% tokens) or `"json"`
-- `scope`: CSS selector restricting observation to a specific container (e.g. `"main"`, `"#search-results"`, `"form"`)
-- `filter`: `"interactive"` (default), `"inputs"`, `"buttons_links"`, `"all"`
-- `includeScreenshot`: `boolean` (default `false` for rapid reasoning)
-- `screenshotScope`: CSS selector to crop screenshot to a specific element (saves 85%+ vision tokens)
-- `clip`: Bounding box `{ x, y, width, height }` to crop screenshot
-- `visibleOnly`: Only index elements currently inside the active viewport
-- `maxElements`: Integer (default `60`)
-
-### 3. `brave_read`
-
-Extracts readable articles, documentation, or tables as clean Markdown with zero interactive element noise.
-
-- `target`: `"agent"` (default) or `"user"`
-- `scope`: Optional CSS selector to scope content extraction (e.g. `"article"`, `"#main-content"`, `"table"`)
-- `maxLength`: Integer maximum character length (default `6000`)
-- **Use case**: Research, reading documentation, and table scraping without polluting context with UI buttons.
-
-### 4. `brave_act`
-
-Executes an atomic browser action against the targeted tab with automatic compound observation and 5-tier self-healing.
-
-- `action`: `"click"`, `"type"`, `"press"`, `"scroll"`, `"hover"`, `"drag"`, `"select_option"`, `"upload_file"`
-- `target`: `"agent"` (default) or `"user"`
-- `ref`: Ephemeral element reference from `brave_observe` (e.g. `"e1"`, `"e12"`)
-- `coordinate`: Direct `[x, y]` screen coordinate to interact directly without DOM inspection (ideal for Canvas, SVG, maps)
-- `text`: Text string to type into input or rich text editor
-- `pressEnter`: `boolean` (press Enter immediately after typing)
-- `clear`: `boolean` (clear input before typing, default `true`)
-- `button`: `"left"` (default), `"right"`, `"middle"`
-- `clickCount`: Integer (default `1`, set `2` for double-click)
-- `startCoordinate` / `endCoordinate`: `[x, y]` coordinates for action `"drag"`
-- `steps`: Smooth drag interpolation steps (default `10`)
-- `and_observe`: `boolean` (default `true` - waits for DOM settlement and returns fresh observation in the same turn, cutting turn count by 50%)
-
-### 5. `brave_batch_act`
-
-Executes an array of actions sequentially in a single turn without round-trip LLM delays.
-
-- `actions`: Array of action objects following the `brave_act` schema
-- `and_observe`: `boolean` (default `true` - returns the final post-action observation automatically)
-- `target`: `"agent"` or `"user"`
-- **Returns**: Array of step receipts verifying sequential completion + optional final observation.
-
-### 6. `brave_workflow`
-
-Executes high-speed multi-step repetitive operations across ANY website in a single tool call without intermediate LLM loops.
-
-- `action`: `"paginate_extract"` (loops through pages and scrapes items), `"bulk_action"` (acts on all matching elements on page), or `"run_script"` (executes reusable script from `scripts/workflows/`)
-- `itemSelector`: CSS selector for repeating cards/items/rows to extract across pages
-- `nextSelector`: CSS selector for the Next button/link
-- `scrollMode`: `boolean` (if true, uses infinite scrolling instead of clicking next button)
-- `selector`: CSS selector targeting multiple elements (for `bulk_action`)
-- `bulkType`: `"click"`, `"check"`, `"extract_attribute"` (for `bulk_action`)
-- `scriptName`: Name of script in `brave-mcp/scripts/workflows/` (for `run_script`)
-- `params`: JSON parameters passed to script
-
-### 7. `brave_eval`
-
-Executes arbitrary JavaScript directly in the tab context with zero token overhead.
-
-- `script`: JavaScript code string (e.g. `document.title` or bulk DOM extractors)
-- `target`: `"agent"` or `"user"`
-- `frameIndex`: Optional iframe index to evaluate inside
-
-### 8. `brave_navigate`
-
-Controls tab navigation and history.
-
-- `url`: Target web address (e.g. `"https://github.com"`)
-- `action`: `"goto"` (default), `"reload"`, `"back"`, `"forward"`
-- `target`: `"agent"` or `"user"`
-
----
-
-## 📁 Repository Structure
+## 📁 Repository structure
 
 ```text
 Browser-remastered/
-├── brave-mcp/                     # Core MCP Server & CDP Bridge
-│   ├── package.json               # Dependencies: @modelcontextprotocol/sdk, playwright-core, ws
-│   ├── run-mcp.cmd                # Launcher script called by global mcp_config.json
+├── brave-mcp/
+│   ├── run-mcp.cmd              # launcher used by mcp_config.json
 │   ├── src/
-│   │   ├── index.js               # MCP Server entrypoint & 8 tool registrations
-│   │   ├── browser.js             # Playwright CDP connection & tab management
-│   │   ├── observer.js            # Tri-source observer & compact formatter
-│   │   ├── reader.js              # Clean zero-DOM Markdown & table extractor
-│   │   ├── actions.js             # 5-tier self-healing action engine & coordinate resolver
-│   │   ├── verifier.js            # Action receipts & DOM state diffing
-│   │   ├── workflow.js            # High-speed pagination, bulk actions & script runner
-│   │   ├── telemetry-server.js    # WebSocket & HTTP server for Mission Control Console
-│   │   ├── telemetry.js           # Lightweight logging client
-│   │   └── public/                # Standalone Mission Control Web Console (http://localhost:8765)
-│   ├── scripts/                   # Modular automation scripts
-│   │   ├── cdp/                   # Port 9222 diagnostics & connection checks
-│   │   └── workflows/             # Zero-token compiled workflows (e.g. table-exporter.js)
-│   └── test/                      # Comprehensive test batteries
-│       ├── test-connection.js     # Live CDP diagnostic test
-│       ├── test-mcp-protocol.js   # MCP stdio protocol validation (8 tools)
-│       ├── test-battery.js        # 14-point critical guarantee test battery
-│       ├── test-token-optimizations.js # Token savings & compact formatting test
-│       ├── test-workflow.js       # Pagination & workflow execution test
-│       ├── test-self-healing.js   # 5-tier self-healing action engine test
-│       └── test-helper.js         # Browser binary resolver utility
-├── setup.cmd                      # 1-Click universal installer (npm + MCP registration)
-├── launch.cmd                     # Universal launcher (auto-detects Brave, Chrome, or Edge)
-├── brave-launcher/                # Browser startup & CDP connection utilities
-│   ├── launch-brave.cmd           # Double-click batch launcher for Brave
-│   ├── launch-brave.ps1           # PowerShell launcher for Brave
-│   ├── launch-chrome.cmd          # Double-click batch launcher for Google Chrome
-│   ├── launch-edge.cmd            # Double-click batch launcher for Microsoft Edge
-│   ├── launch-edge.ps1            # PowerShell launcher for Microsoft Edge
-│   └── create-connected-shortcut.ps1 # Permanent desktop shortcut generator
-├── artifacts/                     # [GITIGNORED] Runtime screenshots, test runs & downloads
-├── .agents/skills/                # Developer agent skills & automation playbooks
-│   ├── browser-content-capture/   # Dynamic SPA & infinite scroll capture
-│   ├── dom-mutation-sentinel/     # Zero-latency deterministic waiting for SPAs & async events
-│   ├── media-stream-harvester/    # Direct media, stream & document link extractor
-│   ├── network-api-harvester/     # Zero-DOM JSON REST/GraphQL endpoint extractor
-│   ├── parallel-tab-worker/       # Concurrent multi-tab batch processing in 1 turn
-│   ├── self-healing-action/       # Auto-diagnostics & recovery for blocked/obscured actions
-│   ├── session-vault/             # Session & cookie persistence
-│   ├── smart-web-scraper/         # Zero-token structured table & card extractor
-│   ├── stealth-interaction/       # Anti-bot stealth, human physics & cookie dismissal
-│   ├── visual-region-cropper/     # Targeted element screenshot cropping (85%+ token savings)
-│   ├── web-form-filler/           # Batch multi-field form filler
-│   └── website-automator/         # Decision protocol & zero-token scaffolding
-├── AGENTS.md                      # Developer instructions & 4-tier decision protocol
-└── README.md                      # Complete project documentation
+│   │   ├── index.js             # MCP server: 6 tools, instructions, legacy aliases
+│   │   ├── browser.js           # CDP attach (noDefaults), sticky agent tab, tab ids, background tabs
+│   │   ├── page-agent.js        # in-page observer: refs, deltas, modal scope, text capture, user activity
+│   │   ├── page-hooks.js        # per-tab hooks: in-flight requests, network log, dialogs, popups, downloads
+│   │   ├── observer.js          # stable ref registry across frames, full/delta formatting, screenshots
+│   │   ├── actions.js           # action engine on element handles, self-healing fallbacks
+│   │   ├── verifier.js          # action bracket: settle, receipts, side effects
+│   │   ├── reader.js            # Markdown extraction (shadow DOM aware, paged)
+│   │   ├── workflow.js          # pagination, bulk actions, script runner
+│   │   └── paths.js             # artifacts/ locations
+│   ├── scripts/cdp/             # port 9222 diagnostics
+│   ├── scripts/workflows/       # reusable workflow scripts (run_script)
+│   └── test/                    # test suites + bench-sites.js
+├── brave-launcher/              # Brave / Chrome / Edge launchers + desktop shortcut generator
+├── setup.cmd, launch.cmd        # one-click install and launch
+├── .agents/skills/              # agent playbooks
+└── AGENTS.md                    # developer rules and decision protocol
 ```
 
 ---
 
-## 🧪 Testing & Diagnostics Protocol
+## 🧪 Testing
 
-To verify server health, CDP connectivity, and protocol guarantees, run:
+All suites except `npm test` run in a throwaway headless browser and never touch your Brave.
 
 ```bash
 cd brave-mcp
-
-# 1. Test live CDP connection to browser (Port 9222)
-npm test
-
-# 2. Test MCP stdio protocol contracts (all 8 tools)
-npm run test:protocol
-
-# 3. Test token reduction & compact format engine
-npm run test:tokens
-
-# 4. Test universal workflow engine (pagination & bulk actions)
-npm run test:workflow
-
-# 5. Test 5-tier self-healing action engine & overlay auto-dismissal
-npm run test:healing
-
-# 6. Run the full 14-point critical test battery
-npm run test:battery
-
-# 7. Run all test suites sequentially
-npm run test:all
+npm test                 # live: connect to your browser on 9222 and observe the active tab (read-only)
+npm run test:protocol    # MCP handshake + tool discovery
+npm run test:tokens      # compact format, alerts, scope, reader, act+observe
+npm run test:workflow    # pagination, bulk actions, scripts
+npm run test:healing     # self-healing clicks, contenteditable, overlays, canvas, drag
+npm run test:battery     # 14-point guarantee battery
+npm run test:fixes       # reader, select, cross-tab isolation, append typing, receipts
+npm run test:cobrowse    # end-to-end MCP over CDP: dialogs, popups, sticky tab, deltas, network, user guard
+npm run test:all         # everything above except the live test
+node test/bench-sites.js # real-site universality and speed benchmark (needs internet)
 ```
 
 ---
 
-## 🔧 Troubleshooting Guide
+## 🔧 Troubleshooting
 
-### 1. `Error: connect ECONNREFUSED 127.0.0.1:9222`
-
-- **Cause**: The browser is either not running or was launched without remote debugging enabled.
-- **Fix**: Run `brave-launcher\launch-brave.cmd` (for Brave) or `brave-launcher\launch-edge.cmd` (for Edge).
-
-### 2. Edge does not open port 9222 despite launching with the flag
-
-- **Cause**: Microsoft Edge has background processes running by default ("Startup Boost"), causing new instances to delegate to the background process without applying the `--remote-debugging-port` flag.
-- **Fix**: Run `taskkill /f /im msedge.exe` before launching, or launch via `brave-launcher\launch-edge.cmd` (which terminates lingering background processes automatically). In Edge, turn off "Startup boost" under `edge://settings/system`.
-
-### 3. Antigravity does not list `brave-control` tools
-
-- **Cause**: The MCP server is either not configured in `mcp_config.json` or path syntax has unescaped backslashes.
-- **Fix**: Verify `~/.gemini/config/mcp_config.json` points to your local `brave-mcp\run-mcp.cmd` path with properly escaped backslashes.
-
-### 4. Telemetry Port Conflict (Port 8765 in use)
-
-- **Cause**: Another background MCP server or Mission Control process is already using port 8765.
-- **Fix**: The telemetry server automatically detects and attaches to the existing daemon cleanly without crashing the MCP protocol.
+- **`Could not connect to the browser at http://127.0.0.1:9222`**: the browser isn't running with remote debugging. Run `launch.cmd` or `brave-launcher\launch-brave.cmd`.
+- **Edge ignores the debugging flag**: Startup Boost keeps an old process alive. The Edge launcher kills it; also turn off Startup boost in `edge://settings/system`.
+- **`Page is blocked by a dialog`**: a dialog you didn't answer is open in the agent's tab. Answer it, or let the agent use `action:"dialog"`.
+- **`The user is actively using this tab`**: the agent paused because you were typing in its tab. It retries when you stop, or you can give it another tab.
+- **Tools don't appear in Antigravity**: check the path in `~/.gemini/config/mcp_config.json` (escape backslashes).

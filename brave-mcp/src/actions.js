@@ -1,29 +1,65 @@
-function escapeCss(str) {
-  return String(str).replace(/([ #;&,.+*~':"!^$[\]()=>|\/@])/g, '\\$1');
+import { pageAgent, flashElement } from './page-agent.js';
+import { attachPage } from './page-hooks.js';
+import { pageState } from './observer.js';
+
+const HIGHLIGHT = process.env.BRAVE_MCP_HIGHLIGHT !== '0';
+
+const ROLES = new Set([
+  'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'switch',
+  'tab', 'menuitem', 'option', 'slider', 'spinbutton', 'treeitem', 'file', 'clickable'
+]);
+
+const STATEFUL = new Set(['checkbox', 'radio', 'switch', 'textbox', 'searchbox', 'combobox', 'listbox', 'slider', 'spinbutton', 'file']);
+
+const ALIASES = { select_option: 'select', upload_file: 'upload', navigate: 'goto', key: 'press' };
+
+/** Accepts legacy and shorthand parameter names so any agent's guess works. */
+export function normalizeStep(p = {}) {
+  const s = { ...p };
+  s.action = ALIASES[s.action] || s.action;
+  if (s.xy === undefined) s.xy = s.coordinate ?? (s.x !== undefined && s.y !== undefined ? [s.x, s.y] : undefined);
+  if (s.enter === undefined && s.pressEnter !== undefined) s.enter = s.pressEnter;
+  if (s.files === undefined) s.files = s.filePaths;
+  if (typeof s.files === 'string') s.files = [s.files];
+  if (s.dir === undefined) s.dir = s.direction;
+  if (s.slowly === undefined) s.slowly = s.humanLike;
+  if (s.to === undefined) s.to = s.endRef ?? s.endCoordinate;
+  if (s.ref === undefined && s.startRef !== undefined) s.ref = s.startRef;
+  if (s.xy === undefined && s.startCoordinate !== undefined) s.xy = s.startCoordinate;
+  if (s.action === 'press' && !s.key && s.text) s.key = s.text;
+  if (s.action === 'select' && s.value === undefined && s.text !== undefined) s.value = s.text;
+  return s;
 }
 
-function parseCoordinate(param, xParam, yParam) {
-  if (Array.isArray(param) && param.length >= 2) {
-    return [Math.round(param[0]), Math.round(param[1])];
-  }
-  if (param && typeof param === 'object' && 'x' in param && 'y' in param) {
-    return [Math.round(param.x), Math.round(param.y)];
-  }
-  if (typeof param === 'string' && param.includes(',')) {
-    const parts = param.split(',').map(s => parseFloat(s.trim()));
-    if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-      return [Math.round(parts[0]), Math.round(parts[1])];
-    }
-  }
-  if (xParam !== undefined && yParam !== undefined) {
-    const nx = parseFloat(xParam);
-    const ny = parseFloat(yParam);
-    if (!isNaN(nx) && !isNaN(ny)) {
-      return [Math.round(nx), Math.round(ny)];
-    }
-  }
+function parseXY(v) {
+  if (Array.isArray(v) && v.length >= 2) return [Math.round(+v[0]), Math.round(+v[1])];
+  if (v && typeof v === 'object' && 'x' in v) return [Math.round(+v.x), Math.round(+v.y)];
+  if (typeof v === 'string' && v.includes(',')) { const [x, y] = v.split(',').map(Number); if (!isNaN(x) && !isNaN(y)) return [Math.round(x), Math.round(y)]; }
   return null;
 }
+
+/** "e12" -> ref; "css:.x" / "#id" -> css; "button:Save" -> role+name; anything else -> visible text. */
+export function parseTarget(ref) {
+  const r = String(ref).trim();
+  if (/^e\d+$/.test(r)) return { ref: r };
+  let m = r.match(/^css[:=]([\s\S]+)$/);
+  if (m) return { css: m[1].trim() };
+  if (/^[#.[][\w-]/.test(r) && !/\s/.test(r)) return { css: r };
+  m = r.match(/^([a-z]+):\s*([\s\S]*)$/);
+  if (m && ROLES.has(m[1])) return { role: m[1], name: m[2].trim() }; // "combobox:" = first combobox
+  m = r.match(/^text[:=]([\s\S]+)$/);
+  return { name: m ? m[1].trim() : r };
+}
+
+function short(msg) {
+  return String(msg || '').split('\n')[0].replace(/^[\w.]+: /, '').slice(0, 160);
+}
+
+const REJECT = ['reject all', 'reject', 'decline', 'deny', 'only necessary', 'necessary only', 'essential only', 'use necessary', 'refuse',
+  'alle ablehnen', 'ablehnen', 'tout refuser', 'refuser', 'rechazar todo', 'rechazar', 'rifiuta tutto', 'rifiuta', 'recusar', 'rejeitar',
+  'weigeren', 'alles weigeren', 'odrzuć', 'отклонить', '拒绝', '拒否', '거부'];
+const ACCEPT = ['accept all', 'accept', 'i agree', 'agree', 'allow all', 'got it', 'ok', 'okay', 'continue', 'alle akzeptieren', 'akzeptieren',
+  'tout accepter', 'accepter', 'aceptar todo', 'aceptar', 'accetta tutto', 'accetta', 'aceitar', 'akkoord', 'zgadzam się', 'принять', '同意', '接受', '同意する', '동의'];
 
 export class ActionEngine {
   constructor(observer, verifier) {
@@ -31,570 +67,364 @@ export class ActionEngine {
     this.verifier = verifier;
   }
 
-  /**
-   * Helper to locate an element across the main page or targeted iframe.
-   * Multi-tier resolution: ID -> Unique CSS Path -> Name Attribute -> ARIA Role -> Text.
-   */
-  getLocatorForRef(page, refItem) {
-    const { role, name, domMeta, frameIndex } = refItem;
-
-    // Determine execution context (main frame or specific iframe)
-    let context = page;
-    if (frameIndex !== null && frameIndex !== undefined) {
-      const frames = page.frames();
-      if (frames[frameIndex]) {
-        context = frames[frameIndex];
-      }
-    }
-
-    // Normalize role: ARIA uses 'textbox' for inputs and textareas
-    let ariaRole = role ? role.toLowerCase() : '';
-    if (ariaRole === 'input' || ariaRole === 'textarea') {
-      ariaRole = 'textbox';
-    }
-
-    // 1. Direct DOM attribute matches (most precise if available)
-    if (domMeta) {
-      if (domMeta.id) {
-        return context.locator(`[id="${escapeCss(domMeta.id)}"]`).first();
-      }
-      if (domMeta.uniqueSelector) {
-        try {
-          return context.locator(domMeta.uniqueSelector).first();
-        } catch (e) {}
-      }
-      if (domMeta.nameAttr) {
-        return context.locator(`[name="${escapeCss(domMeta.nameAttr)}"]`).first();
-      }
-    }
-
-    // 2. Try ARIA role + accessible name (if valid ARIA role)
-    const validAriaRoles = new Set([
-      'button', 'link', 'textbox', 'searchbox', 'combobox',
-      'checkbox', 'radio', 'switch', 'menuitem', 'tab',
-      'option', 'slider', 'spinbutton', 'heading', 'dialog'
-    ]);
-
-    if (validAriaRoles.has(ariaRole)) {
-      if (name) {
-        try {
-          return context.getByRole(ariaRole, { name, exact: false }).first();
-        } catch (e) {}
-      } else {
-        try {
-          return context.getByRole(ariaRole).first();
-        } catch (e) {}
-      }
-    }
-
-    // 3. Try placeholder for inputs
-    if (name && (ariaRole === 'textbox' || !ariaRole)) {
-      try {
-        return context.getByPlaceholder(name, { exact: false }).first();
-      } catch (e) {}
-    }
-
-    // 4. Try accessible name as text
-    if (name) {
-      try {
-        return context.getByText(name, { exact: false }).first();
-      } catch (e) {}
-    }
-
-    // 5. Fallback to DOM tag / text
-    if (domMeta && domMeta.tag) {
-      if (domMeta.name) {
-        return context.locator(`${domMeta.tag}:has-text("${domMeta.name}")`).first();
-      }
-      return context.locator(domMeta.tag).first();
-    }
-
-    throw new Error(`Unable to determine locator for element '${refItem.ref}' ("${refItem.name || refItem.role}").`);
+  /** Resolves any target string to a live element handle. */
+  async target(page, ref) {
+    const q = parseTarget(ref);
+    if (q.ref) return { ...(await this.observer.handle(page, q.ref)), ref: q.ref };
+    const found = await this.observer.find(page, q);
+    if (!found) throw new Error(`No element matches "${ref}". Observe the page to get refs.`);
+    return { ...(await this.observer.handle(page, found.ref)), ref: found.ref };
   }
 
   /**
-   * Dispatches synthetic DOM events directly to bypass pointer interception,
-   * sticky headers, backdrop blockers, and pointer-events: none.
-   */
-  async _dispatchSyntheticClick(page, refItem, button = 'left') {
-    let context = page;
-    if (refItem.frameIndex !== null && refItem.frameIndex !== undefined) {
-      const frames = page.frames();
-      if (frames[refItem.frameIndex]) context = frames[refItem.frameIndex];
-    }
-
-    return await context.evaluate(({ uniqueSelector, id, cx, cy }) => {
-      let target = null;
-      if (id) target = document.getElementById(id);
-      if (!target && uniqueSelector) {
-        try { target = document.querySelector(uniqueSelector); } catch (e) {}
-      }
-      if (!target && cx && cy) {
-        target = document.elementFromPoint(cx, cy);
-      }
-
-      if (!target) return false;
-
-      const clickable = target.closest('button, a, [role="button"], input, select') || target;
-      clickable.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-
-      const mouseOpts = { bubbles: true, cancelable: true, view: window };
-      clickable.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
-      clickable.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
-      clickable.dispatchEvent(new MouseEvent('click', mouseOpts));
-      if (typeof clickable.click === 'function') {
-        try { clickable.click(); } catch (_) {}
-      }
-      return true;
-    }, {
-      uniqueSelector: refItem.domMeta?.uniqueSelector,
-      id: refItem.domMeta?.id,
-      cx: refItem.domMeta?.centerX,
-      cy: refItem.domMeta?.centerY
-    }).catch(() => false);
-  }
-
-  /**
-   * Auto-detects and dismisses intrusive cookie banners, GDPR prompts, and modal overlays.
+   * Closes cookie/consent/modal blockers. Prefers the privacy-preserving choice
+   * (reject / necessary-only), then a close button, then accept. Works in many languages.
    */
   async dismissOverlays(page) {
-    try {
-      return await page.evaluate(() => {
-        const commonSelectors = [
-          '#onetrust-accept-btn-handler',
-          'button[id*="accept" i]',
-          'button[class*="cookie" i]',
-          'button[aria-label*="accept" i]',
-          '[aria-label="Close"]',
-          '.modal-close',
-          '.close-button',
-          '[data-dismiss="modal"]'
-        ];
-
-        for (const sel of commonSelectors) {
-          try {
-            const btn = document.querySelector(sel);
-            if (btn && btn.offsetParent !== null) {
-              btn.click();
-              return true;
-            }
-          } catch (_) {}
+    return page.evaluate(({ reject, accept }) => {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+      const buttons = Array.from(document.querySelectorAll('button, [role="button"], a[role="button"], input[type="button"], input[type="submit"]')).filter(vis);
+      const label = (b) => (b.innerText || b.value || b.getAttribute('aria-label') || '').trim().toLowerCase();
+      const pick = (phrases) => {
+        for (const p of phrases) {
+          const b = buttons.find(x => { const t = label(x); return t === p || (t.startsWith(p) && t.length < p.length + 20); });
+          if (b) return b;
         }
+        return null;
+      };
+      let btn = pick(reject);
+      if (!btn) btn = Array.from(document.querySelectorAll('#onetrust-reject-all-handler, [aria-label="Close" i], [aria-label="Dismiss" i], [data-dismiss="modal"], .modal-close, .close-button')).find(vis);
+      if (!btn) btn = pick(accept);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }, { reject: REJECT, accept: ACCEPT }).catch(() => false);
+  }
 
-        const phrases = ['accept all', 'accept cookies', 'i agree', 'allow all', 'got it', 'accept'];
-        const buttons = Array.from(document.querySelectorAll('button, a[role="button"]'));
-        for (const btn of buttons) {
-          if (btn.offsetParent !== null) {
-            const txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
-            if (phrases.some(p => txt === p || txt.startsWith(p))) {
-              btn.click();
-              return true;
-            }
-          }
+  async _click(page, t, p) {
+    const opts = { button: p.button || 'left', clickCount: p.clickCount || 1, modifiers: p.modifiers };
+    if (HIGHLIGHT) await t.el.evaluate(flashElement).catch(() => {});
+    let first;
+    try { await t.el.click({ ...opts, timeout: 2000 }); return null; } catch (e) { first = e; }
+
+    // Visually hidden checkbox/radio behind a styled <label>.
+    const label = await t.el.evaluateHandle(el => (el.labels && el.labels[0]) || null).catch(() => null);
+    const labelEl = label && label.asElement();
+    if (labelEl) {
+      try { await labelEl.click({ timeout: 1500 }); return 'via label'; } catch (_) {}
+    }
+    if (/intercept/i.test(first.message) && await this.dismissOverlays(page)) {
+      try { await t.el.click({ ...opts, timeout: 1500 }); return 'after closing overlay'; } catch (_) {}
+    }
+    try { await t.el.click({ ...opts, force: true, timeout: 1500 }); return 'forced'; } catch (_) {}
+    const ok = await t.el.evaluate((el, button) => {
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const r = el.getBoundingClientRect();
+      const o = { bubbles: true, cancelable: true, composed: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: button === 'right' ? 2 : 0 };
+      el.dispatchEvent(new PointerEvent('pointerdown', o));
+      el.dispatchEvent(new MouseEvent('mousedown', o));
+      if (el.focus) el.focus();
+      el.dispatchEvent(new PointerEvent('pointerup', o));
+      el.dispatchEvent(new MouseEvent('mouseup', o));
+      el.dispatchEvent(new MouseEvent(button === 'right' ? 'contextmenu' : 'click', o));
+      return true;
+    }, opts.button).catch(() => false);
+    if (ok) return 'dom events';
+    throw new Error(`click failed: ${short(first.message)}`);
+  }
+
+  async _type(page, t, text, p) {
+    if (HIGHLIGHT) await t.el.evaluate(flashElement).catch(() => {});
+    if (p.clear === false) {
+      await t.el.evaluate(el => {
+        el.focus();
+        if (typeof el.setSelectionRange === 'function' && typeof el.value === 'string') {
+          try { el.setSelectionRange(el.value.length, el.value.length); } catch (_) {}
+        } else if (el.isContentEditable) {
+          const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+          const s = getSelection(); s.removeAllRanges(); s.addRange(r);
         }
-        return false;
       });
-    } catch (e) {
-      return false;
+      await page.keyboard.type(text, { delay: p.slowly ? 30 : 0 });
+      return;
+    }
+    if (p.slowly) {
+      await t.el.fill('').catch(() => {});
+      await t.el.click({ timeout: 2000 }).catch(() => t.el.focus());
+      await page.keyboard.type(text, { delay: 30 });
+      return;
+    }
+    try {
+      await t.el.fill(text, { timeout: 2500 });
+    } catch (_) {
+      // Not directly fillable (custom widget or wrapper): focus it and type like a user.
+      await t.el.click({ timeout: 2000 }).catch(() => t.el.focus().catch(() => {}));
+      await page.keyboard.press('ControlOrMeta+a').catch(() => {});
+      await page.keyboard.type(text);
     }
   }
 
+  async _select(page, t, value) {
+    try {
+      await t.el.selectOption(String(value), { timeout: 2500 });
+      return null;
+    } catch (_) {
+      // Custom dropdown: open it, then click the option by its text.
+      await this._click(page, t, {});
+      await page.waitForTimeout(150);
+      const opt = await this.observer.find(page, { role: 'option', name: String(value) }) || await this.observer.find(page, { name: String(value) });
+      if (!opt) throw new Error(`option "${value}" not found`);
+      const o = await this.observer.handle(page, opt.ref);
+      await this._click(page, o, {});
+      return 'custom dropdown';
+    }
+  }
+
+  async _upload(page, t, files) {
+    const isFile = await t.el.evaluate(el => el.tagName === 'INPUT' && el.type === 'file');
+    if (isFile) { await t.el.setInputFiles(files); return null; }
+    // Styled upload button: catch the native file chooser it opens.
+    try {
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser', { timeout: 3000 }), t.el.click({ timeout: 2000 })]);
+      await chooser.setFiles(files);
+      return 'file chooser';
+    } catch (_) {
+      const near = await t.el.evaluateHandle(el => {
+        let p = el;
+        while (p && !p.querySelector?.('input[type=file]')) p = p.parentElement;
+        return p ? p.querySelector('input[type=file]') : document.querySelector('input[type=file]');
+      });
+      const input = near.asElement();
+      if (!input) throw new Error('no file input found near target');
+      await input.setInputFiles(files);
+      return 'nearest file input';
+    }
+  }
+
+  async _wait(page, p) {
+    const timeout = p.timeout ?? 10000;
+    if (p.ms) { await page.waitForTimeout(Math.min(+p.ms, 30000)); return `waited ${p.ms}ms`; }
+    const end = Date.now() + timeout;
+    let what;
+    const check = async () => {
+      if (p.url) { what = `url ~ "${p.url}"`; return page.url().includes(p.url); }
+      if (p.text) { what = `text "${p.text}"`; return page.mainFrame().evaluate(pageAgent, { op: 'text', q: p.text }).catch(() => false); }
+      if (p.gone) { what = `text "${p.gone}" gone`; return !(await page.mainFrame().evaluate(pageAgent, { op: 'text', q: p.gone }).catch(() => true)); }
+      if (p.ref) {
+        what = `"${p.ref}"`;
+        try { await this.target(page, p.ref); return true; } catch (_) { return false; }
+      }
+      throw new Error("wait needs one of: text, gone, ref, url, ms");
+    };
+    while (true) {
+      if (await check()) return `waited for ${what}`;
+      if (Date.now() > end) throw new Error(`wait timed out after ${timeout}ms for ${what}`);
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+
+  async _eval(page, script) {
+    const s = String(script).trim();
+    const body = /(^|[;\n{]\s*)return\b/.test(s) && !/^(async\s*)?(\(|function\b)/.test(s) ? `(async () => { ${s} })()` : s;
+    return page.evaluate(body);
+  }
+
+  /** Answers a dialog the page is currently showing (the page is blocked until then). */
+  async answerDialog(page, p) {
+    const bm = attachPage(page);
+    const d = bm.pendingDialog;
+    if (!d) throw new Error('No open dialog on this tab.');
+    bm.pendingDialog = null;
+    const accept = p.accept !== false;
+    try {
+      if (accept) await d.accept(p.text ?? d.defaultValue());
+      else await d.dismiss();
+    } catch (_) {}
+    return `${accept ? 'accepted' : 'dismissed'} ${d.type()} "${d.message().slice(0, 80)}"`;
+  }
+
   /**
-   * Executes an action against the page and produces an Action Receipt.
-   * If andObserve is true, automatically waits for DOM settlement and returns
-   * the fresh next-state observation directly inside the receipt.
+   * Executes one action and returns a receipt. observe: 'delta' | 'full' | 'none'.
    */
-  async execute(page, params, { suppressInvalidate = false, andObserve = false, observeOptions = {} } = {}) {
-    const {
-      action,
-      ref,
-      obs_id,
-      text,
-      key,
-      direction = 'down',
-      amount = 500,
-      value,
-      filePaths,
-      pressEnter = false,
-      includeScreenshot = false
-    } = params;
+  async execute(page, params, { andObserve = false, observe = null, observeOptions = {}, tabId = null } = {}) {
+    const p = normalizeStep(params);
+    const action = p.action;
+    if (!action) throw new Error("Missing 'action'.");
+    const mode = observe || ((andObserve || p.and_observe) ? 'delta' : 'none');
 
-    const beforeState = await this.verifier.captureBeforeState(page);
-    let elementChange = null;
+    if (action === 'dialog') {
+      const msg = await this.answerDialog(page, p);
+      const receipt = { action: { type: 'dialog' }, executed: true, changes: [msg], before: {}, after: {} };
+      if (mode !== 'none') receipt.nextObservation = await this.observer.observe(page, { delta: mode === 'delta', tabId, ...observeOptions });
+      return receipt;
+    }
 
-    switch (action) {
-      case 'click': {
-        const coord = parseCoordinate(params.coordinate, params.x, params.y);
-        const clickOptions = { timeout: 2500 };
-        const button = params.button || 'left';
-        clickOptions.button = button;
-        if (params.clickCount) {
-          clickOptions.clickCount = params.clickCount;
-        }
+    const bm = attachPage(page);
+    bm.dialogPolicy = { accept: p.dialog !== 'dismiss', text: p.dialogText };
+    const before = await this.verifier.captureBeforeState(page, { respectUser: p.force !== true });
 
-        // Direct coordinate / visual click mode (bypasses DOM queries for canvas, WebGL, SVG, maps)
-        if (coord) {
-          const [cx, cy] = coord;
-          await page.mouse.click(cx, cy, clickOptions);
-          elementChange = `Clicked (${button}${params.clickCount > 1 ? ` x${params.clickCount}` : ''}) at coordinates [${cx}, ${cy}]`;
+    let did, how = null, result, refUsed = p.ref, targetRole = null;
+    const xy = parseXY(p.xy);
+    const needTarget = async () => {
+      if (p.ref === undefined || p.ref === null || p.ref === '') throw new Error(`Action '${action}' needs 'ref' (e.g. "e12" or "Sign in") or 'xy'.`);
+      const t = await this.target(page, p.ref);
+      refUsed = t.ref;
+      targetRole = t.info?.role;
+      return t;
+    };
+    const label = (t) => `${t.ref}${t.info?.name ? ` "${t.info.name.slice(0, 40)}"` : ''}`;
+
+    try {
+      switch (action) {
+        case 'click': {
+          if (xy) {
+            await page.mouse.click(xy[0], xy[1], { button: p.button || 'left', clickCount: p.clickCount || 1 });
+            did = `click at ${xy}`;
+            break;
+          }
+          const t = await needTarget();
+          how = await this._click(page, t, p);
+          did = `click ${label(t)}`;
           break;
         }
-
-        if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'click'.");
-        const refItem = this.observer.resolveRef(ref, obs_id, page);
-
-        // --- 5-Tier Self-Healing Click Execution ---
-        let clickSucceeded = false;
-        let methodUsed = 'standard_click';
-        let lastErr = null;
-
-        // Tier 1: Standard Playwright click
-        try {
-          const locator = this.getLocatorForRef(page, refItem);
-          await locator.click(clickOptions);
-          clickSucceeded = true;
-        } catch (err1) {
-          lastErr = err1;
-
-          // Tier 2: Scroll into center + force click (resolves sticky headers & intercepted pointers)
-          try {
-            const locator = this.getLocatorForRef(page, refItem);
-            await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
-            await locator.click({ ...clickOptions, force: true, timeout: 2000 });
-            clickSucceeded = true;
-            methodUsed = 'scroll_and_force_click';
-          } catch (err2) {
-            lastErr = err2;
-
-            // Tier 3: Synthetic DOM Event Dispatch (bypasses backdrop overlays & pointer-events: none)
-            try {
-              const executed = await this._dispatchSyntheticClick(page, refItem, params.button);
-              if (executed) {
-                clickSucceeded = true;
-                methodUsed = 'synthetic_dom_dispatch';
-              }
-            } catch (err3) {}
-
-            // Tier 4: Hardware coordinate click via dynamic bounding box (handles iframes, transforms, and scrolling)
-            if (!clickSucceeded) {
-              try {
-                const locator = this.getLocatorForRef(page, refItem);
-                const box = await locator.boundingBox().catch(() => null);
-                if (box && box.width > 0 && box.height > 0) {
-                  const cx = Math.round(box.x + box.width / 2);
-                  const cy = Math.round(box.y + box.height / 2);
-                  await page.mouse.click(cx, cy, clickOptions);
-                  clickSucceeded = true;
-                  methodUsed = 'boundingbox_coordinate_click';
-                } else if (refItem.domMeta?.centerX && refItem.domMeta?.centerY && refItem.frameIndex === null) {
-                  await page.mouse.click(refItem.domMeta.centerX, refItem.domMeta.centerY, clickOptions);
-                  clickSucceeded = true;
-                  methodUsed = 'cached_coordinate_click';
-                }
-              } catch (err4) {}
-            }
-
-            // Tier 5: Dismiss overlay blocker and retry
-            if (!clickSucceeded) {
-              const dismissed = await this.dismissOverlays(page);
-              if (dismissed) {
-                try {
-                  const locator = this.getLocatorForRef(page, refItem);
-                  await locator.click({ ...clickOptions, force: true, timeout: 2500 });
-                  clickSucceeded = true;
-                  methodUsed = 'click_after_overlay_dismissal';
-                } catch (err5) {}
-              }
-            }
-
-            if (!clickSucceeded) {
-              throw new Error(`Failed to click element '${ref}' ("${refItem.name || refItem.role}") after self-healing attempts: ${lastErr?.message || 'Element unclickable'}`);
-            }
+        case 'type': {
+          if (p.text === undefined) throw new Error("'type' needs 'text'.");
+          const text = String(p.text);
+          if (xy) {
+            await page.mouse.click(xy[0], xy[1]);
+            if (p.clear !== false) await page.keyboard.press('ControlOrMeta+a').catch(() => {});
+            await page.keyboard.type(text, { delay: p.slowly ? 30 : 0 });
+            if (p.enter) await page.keyboard.press('Enter');
+            did = `type at ${xy}`;
+            break;
           }
-        }
-
-        elementChange = `Clicked (${button}) ${refItem.role || 'element'} "${refItem.name || ref}"${refItem.frameIndex !== null ? ' (inside iframe)' : ''}${methodUsed !== 'standard_click' ? ` [self-healed via ${methodUsed}]` : ''}`;
-        break;
-      }
-
-      case 'type': {
-        if (text === undefined) throw new Error("Parameter 'text' is required for action 'type'.");
-        const coord = parseCoordinate(params.coordinate, params.x, params.y);
-
-        // Direct coordinate / visual typing mode (clicks location to focus, clears, and types)
-        if (coord) {
-          const [cx, cy] = coord;
-          await page.mouse.click(cx, cy);
-          if (params.clear !== false) {
-            const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-            await page.keyboard.press(`${modifier}+a`).catch(() => {});
-            await page.keyboard.press('Backspace').catch(() => {});
-          }
-          await page.keyboard.type(text, { delay: params.humanLike ? 25 : 5 });
-          if (pressEnter) {
-            await page.keyboard.press('Enter');
-          }
-          elementChange = `Clicked coordinates [${cx}, ${cy}] and typed "${text}"${pressEnter ? ' and pressed Enter' : ''}`;
+          const t = await needTarget();
+          await this._type(page, t, text, p);
+          if (p.enter) await t.el.press('Enter').catch(() => page.keyboard.press('Enter'));
+          did = `type ${label(t)} "${text.length > 40 ? text.slice(0, 40) + '…' : text}"${p.enter ? ' + Enter' : ''}`;
           break;
         }
-
-        if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'type'.");
-        const refItem = this.observer.resolveRef(ref, obs_id, page);
-        const locator = this.getLocatorForRef(page, refItem);
-
-        if (params.clear === false) {
-          await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
-          await locator.click({ timeout: 2000, force: true }).catch(() => {});
-          await page.keyboard.press('End').catch(() => {});
-          await page.keyboard.type(text, { delay: params.humanLike ? 25 : 5 });
-        } else if (params.humanLike) {
-          await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
-          await locator.click({ timeout: 3000, force: true }).catch(() => {});
-          await page.keyboard.type(text, { delay: 25 });
-        } else {
-          let typed = false;
-          // Tier 1: Standard Playwright fill
-          try {
-            await locator.fill(text, { timeout: 3500 });
-            typed = true;
-          } catch (fillErr) {
-            // Tier 2: React synthetic setter + contenteditable dispatch
-            try {
-              let context = page;
-              if (refItem.frameIndex !== null && refItem.frameIndex !== undefined) {
-                const frames = page.frames();
-                if (frames[refItem.frameIndex]) context = frames[refItem.frameIndex];
-              }
-              typed = await context.evaluate(({ id, uniqueSelector, val }) => {
-                let el = null;
-                if (id) el = document.getElementById(id);
-                if (!el && uniqueSelector) {
-                  try { el = document.querySelector(uniqueSelector); } catch (e) {}
-                }
-                if (!el) return false;
-
-                el.focus();
-                if (el.isContentEditable) {
-                  el.innerText = val;
-                  el.dispatchEvent(new Event('input', { bubbles: true }));
-                  return true;
-                }
-
-                // Trigger React synthetic setter
-                const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-                if (setter) {
-                  setter.call(el, val);
-                } else {
-                  el.value = val;
-                }
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                return true;
-              }, {
-                id: refItem.domMeta?.id,
-                uniqueSelector: refItem.domMeta?.uniqueSelector,
-                val: text
-              });
-            } catch (reactErr) {}
-
-            // Tier 3: Click to focus + keyboard typing fallback
-            if (!typed) {
-              await locator.scrollIntoViewIfNeeded({ timeout: 1500 }).catch(() => {});
-              await locator.click({ timeout: 3000, force: true }).catch(() => {});
-              const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
-              await page.keyboard.press(`${modifier}+a`).catch(() => {});
-              await page.keyboard.type(text, { delay: 10 });
-            }
-          }
+        case 'press': {
+          if (!p.key) throw new Error("'press' needs 'key' (e.g. Enter, Escape, Control+a).");
+          if (p.ref) { const t = await needTarget(); await t.el.press(p.key); did = `press ${p.key} on ${label(t)}`; }
+          else { await page.keyboard.press(p.key); did = `press ${p.key}`; }
+          break;
         }
-
-        if (pressEnter) {
-          await locator.press('Enter').catch(async () => {
-            await page.keyboard.press('Enter');
+        case 'select': {
+          if (p.value === undefined || p.value === null) throw new Error("'select' needs 'value' (option value or visible text).");
+          const t = await needTarget();
+          how = await this._select(page, t, p.value);
+          did = `select "${p.value}" in ${label(t)}`;
+          break;
+        }
+        case 'upload': {
+          if (!Array.isArray(p.files) || !p.files.length) throw new Error("'upload' needs 'files' (absolute paths).");
+          const t = await needTarget();
+          how = await this._upload(page, t, p.files);
+          did = `upload ${p.files.length} file(s) to ${label(t)}`;
+          break;
+        }
+        case 'hover': {
+          if (xy) { await page.mouse.move(xy[0], xy[1]); did = `hover at ${xy}`; break; }
+          const t = await needTarget();
+          await t.el.hover({ timeout: 2500 }).catch(async () => {
+            const b = await t.el.boundingBox();
+            if (!b) throw new Error('element has no box');
+            await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
           });
-        }
-        elementChange = `Typed "${text}" into ${refItem.role || 'input'} "${refItem.name || ref}"${pressEnter ? ' and pressed Enter' : ''}`;
-        break;
-      }
-
-      case 'press': {
-        if (!key) throw new Error("Parameter 'key' is required for action 'press'. Example: 'Enter', 'Tab', 'Escape'.");
-        await page.keyboard.press(key);
-        elementChange = `Pressed key '${key}'`;
-        break;
-      }
-
-      case 'scroll': {
-        let deltaY = direction === 'down' ? amount : -amount;
-        if (direction === 'top') {
-          await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
-          elementChange = 'Scrolled to top of page';
-        } else if (direction === 'bottom') {
-          await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
-          elementChange = 'Scrolled to bottom of page';
-        } else {
-          await page.mouse.wheel(0, deltaY);
-          elementChange = `Scrolled ${direction} by ${amount}px`;
-        }
-        break;
-      }
-
-      case 'hover': {
-        const coord = parseCoordinate(params.coordinate, params.x, params.y);
-        if (coord) {
-          const [cx, cy] = coord;
-          await page.mouse.move(cx, cy);
-          elementChange = `Hovered at coordinates [${cx}, ${cy}]`;
+          did = `hover ${label(t)}`;
           break;
         }
-
-        if (!ref) throw new Error("Parameter 'ref' or 'coordinate' ([x, y]) is required for action 'hover'.");
-        const refItem = this.observer.resolveRef(ref, obs_id, page);
-        const locator = this.getLocatorForRef(page, refItem);
-        try {
-          await locator.hover({ timeout: 3500 });
-        } catch (hoverErr) {
-          // Dynamic bounding box hover fallback
-          const box = await locator.boundingBox().catch(() => null);
-          if (box && box.width > 0) {
-            await page.mouse.move(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
-          } else if (refItem.domMeta?.centerX && refItem.domMeta?.centerY) {
-            await page.mouse.move(refItem.domMeta.centerX, refItem.domMeta.centerY);
-          } else {
-            throw hoverErr;
+        case 'scroll': {
+          let lid, frame = page.mainFrame();
+          if (p.ref) {
+            const t = await needTarget();
+            if (!p.dir) { await t.el.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {}); did = `scroll to ${label(t)}`; break; }
+            lid = pageState(page).refs.get(t.ref)?.lid;
+            frame = t.frame;
           }
+          const r = await frame.evaluate(pageAgent, { op: 'scroll', dir: p.dir || 'down', amount: p.amount, lid });
+          did = `scroll ${p.dir || 'down'} (${r.container}) y=${r.y}/${r.h}${r.moved ? '' : ' — did not move (end reached?)'}`;
+          break;
         }
-        elementChange = `Hovered over ${refItem.role || 'element'} "${refItem.name || ref}"`;
-        break;
+        case 'drag': {
+          const point = async (v) => {
+            const c = parseXY(v);
+            if (c) return c;
+            const t = await this.target(page, v);
+            await t.el.scrollIntoViewIfNeeded().catch(() => {});
+            const b = await t.el.boundingBox();
+            if (!b) throw new Error(`drag target "${v}" has no box`);
+            return [b.x + b.width / 2, b.y + b.height / 2];
+          };
+          const from = xy || await point(p.ref);
+          if (p.to === undefined) throw new Error("'drag' needs 'to' (ref or [x,y]).");
+          const to = await point(p.to);
+          await page.mouse.move(from[0], from[1]);
+          await page.mouse.down();
+          await page.mouse.move(to[0], to[1], { steps: p.steps || 12 });
+          await page.mouse.up();
+          did = `drag ${from.map(Math.round)} → ${to.map(Math.round)}`;
+          break;
+        }
+        case 'goto': {
+          if (!p.url) throw new Error("'goto' needs 'url'.");
+          let url = String(p.url).trim();
+          if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(url) ? 'http://' : 'https://') + url;
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: p.timeout || 20000 });
+          did = `goto ${url}`;
+          break;
+        }
+        case 'back': await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }); did = 'back'; break;
+        case 'forward': await page.goForward({ waitUntil: 'domcontentloaded', timeout: 15000 }); did = 'forward'; break;
+        case 'reload': await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 }); did = 'reload'; break;
+        case 'wait': did = await this._wait(page, p); break;
+        case 'eval': {
+          if (!p.script) throw new Error("'eval' needs 'script'.");
+          result = await this._eval(page, p.script);
+          const s = typeof result === 'string' ? result : JSON.stringify(result);
+          did = `eval → ${s === undefined ? 'undefined' : s.length > 300 ? s.slice(0, 300) + '…' : s}`;
+          break;
+        }
+        default:
+          throw new Error(`Unknown action '${action}'. Use: click, type, press, select, upload, hover, scroll, drag, goto, back, forward, reload, wait, eval, dialog.`);
       }
-
-      case 'drag': {
-        let start = parseCoordinate(params.startCoordinate, params.startX, params.startY);
-        let end = parseCoordinate(params.endCoordinate, params.endX, params.endY);
-
-        if (!start && params.startRef) {
-          const item = this.observer.resolveRef(params.startRef, obs_id, page);
-          const locator = this.getLocatorForRef(page, item);
-          const box = await locator.boundingBox().catch(() => null);
-          if (box) start = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
-        }
-
-        if (!end && params.endRef) {
-          const item = this.observer.resolveRef(params.endRef, obs_id, page);
-          const locator = this.getLocatorForRef(page, item);
-          const box = await locator.boundingBox().catch(() => null);
-          if (box) end = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
-        }
-
-        if (!start || !end) {
-          throw new Error("Action 'drag' requires 'startCoordinate' and 'endCoordinate' ([x, y]), or 'startRef' and 'endRef'.");
-        }
-
-        const steps = params.steps || 15;
-        await page.mouse.move(start[0], start[1]);
-        await page.mouse.down();
-        await page.mouse.move(end[0], end[1], { steps });
-        await page.mouse.up();
-
-        elementChange = `Dragged from [${start[0]}, ${start[1]}] to [${end[0]}, ${end[1]}] in ${steps} steps`;
-        break;
-      }
-
-      case 'select_option': {
-        if (!ref) throw new Error("Parameter 'ref' is required for action 'select_option'.");
-        if (value === undefined || value === null) throw new Error("Parameter 'value' is required for action 'select_option'.");
-        const refItem = this.observer.resolveRef(ref, obs_id, page);
-        const locator = this.getLocatorForRef(page, refItem);
-        try {
-          await locator.selectOption(value, { timeout: 3500 });
-        } catch (selErr) {
-          // Fallback for custom ARIA combobox / dropdown: click dropdown then click option text
-          let context = page;
-          if (refItem.frameIndex !== null && refItem.frameIndex !== undefined) {
-            const frames = page.frames();
-            if (frames[refItem.frameIndex]) context = frames[refItem.frameIndex];
-          }
-          await locator.click({ force: true, timeout: 3000 });
-          await page.waitForTimeout(150);
-          const optionLocator = context.locator('[role="option"], li, div').filter({ hasText: value }).first();
-          await optionLocator.click({ force: true, timeout: 4000 });
-        }
-        elementChange = `Selected option "${value}" on ${refItem.role || 'select'} "${refItem.name || ref}"`;
-        break;
-      }
-
-      case 'upload_file': {
-        if (!ref) throw new Error("Parameter 'ref' is required for action 'upload_file'.");
-        if (!filePaths || !Array.isArray(filePaths)) throw new Error("Parameter 'filePaths' (array of string paths) is required for action 'upload_file'.");
-        const refItem = this.observer.resolveRef(ref, obs_id, page);
-        const locator = this.getLocatorForRef(page, refItem);
-        try {
-          await locator.setInputFiles(filePaths, { timeout: 4000 });
-        } catch (upErr) {
-          // Fallback: If targeted element wasn't the input itself (e.g. styled label or wrapper), find nearest file input
-          const fileInput = page.locator('input[type="file"]').first();
-          await fileInput.setInputFiles(filePaths, { timeout: 4000 });
-        }
-        elementChange = `Uploaded ${filePaths.length} file(s) into file input "${refItem.name || ref}"`;
-        break;
-      }
-
-      default:
-        throw new Error(`Unknown action '${action}'. Supported actions: click, type, press, scroll, hover, drag, select_option, upload_file.`);
+    } catch (err) {
+      await this.verifier.captureAfterState(page, before, { maxWait: 300 }).catch(() => {});
+      throw err;
     }
 
-    // Capture after state and create receipt
-    const afterState = await this.verifier.captureAfterState(page, beforeState, { includeScreenshot });
-
-    const shouldObserve = andObserve || Boolean(params.and_observe);
-    let nextObservation = null;
-
-    if (shouldObserve) {
-      // Deterministic settlement gate: if URL navigated or loading, wait for domcontentloaded
-      if (beforeState.url !== afterState.url || afterState.readyState !== 'complete') {
-        await page.waitForLoadState('domcontentloaded', { timeout: 3500 }).catch(() => {});
-      } else {
-        // Fast micro-settlement: handle background tabs so they do not freeze on requestIdleCallback
-        await page.evaluate(() => new Promise(r => {
-          if (document.visibilityState === 'visible' && 'requestIdleCallback' in window) {
-            window.requestIdleCallback(r, { timeout: 120 });
-          } else {
-            setTimeout(r, 50);
-          }
-        })).catch(() => {});
-      }
-      nextObservation = await this.observer.observe(page, { format: 'compact', ...observeOptions });
-    } else {
-      // Invalidate stale observation references if URL navigated to a new page
-      if (!suppressInvalidate && beforeState.url !== afterState.url) {
-        this.observer.invalidate(page);
-      }
-    }
-
-    const hasDownload = page._lastDownload && page._lastDownload.timestamp > (beforeState?.lastDownloadTime || 0);
-    const hasDialog = page._lastDialog && page._lastDialog.timestamp > (beforeState?.lastDialogTime || 0);
-
+    const after = await this.verifier.captureAfterState(page, before, {
+      includeScreenshot: p.includeScreenshot,
+      maxWait: action === 'wait' ? 400 : 1500,
+      // Toggles and form fields change properties, not DOM, so don't wait for a mutation there.
+      expectChange: (action === 'click' || action === 'press') && !xy && !STATEFUL.has(targetRole)
+    });
+    const fx = this.verifier.sideEffects(page, before);
+    const popup = bm.popup && !bm.popup.isClosed() ? bm.popup : null;
     const receipt = this.verifier.createReceipt(
+      { type: action, ref: refUsed, text: p.text ? String(p.text).slice(0, 50) : undefined },
+      before,
+      after,
       {
-        type: action,
-        ref: ref || (params.coordinate ? `coord[${params.coordinate}]` : undefined),
-        obs_id,
-        text: text ? text.slice(0, 50) : undefined
-      },
-      beforeState,
-      afterState,
-      {
-        elementChange,
-        download: hasDownload ? page._lastDownload : undefined,
-        dialogMessage: hasDialog ? page._lastDialog.message : undefined
+        elementChange: how ? `${did} [${how}]` : did,
+        download: fx.download,
+        dialogMessage: fx.dialog?.message,
+        dialogAccepted: fx.dialog?.accepted
       }
     );
+    if (result !== undefined) receipt.result = result;
+    if (popup) receipt.newPage = popup;
+    if (after.navigated) receipt.navigated = true;
 
-    if (nextObservation) {
-      receipt.nextObservation = nextObservation;
+    if (mode !== 'none' && !after.closed) {
+      const obsPage = popup || page;
+      if (popup) await popup.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+      receipt.nextObservation = await this.observer.observe(obsPage, { delta: mode === 'delta' && !popup, tabId: popup ? null : tabId, ...observeOptions });
+      // Don't repeat new text that is already shown as an element name.
+      const names = new Set(receipt.nextObservation.elements.map(e => e.name).filter(Boolean));
+      receipt.changes = receipt.changes.filter(c => !(c.startsWith('text: "') && names.has(c.slice(7, -1))));
     }
-
     return receipt;
   }
 }

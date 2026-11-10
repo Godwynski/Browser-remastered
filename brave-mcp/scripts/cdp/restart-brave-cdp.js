@@ -23,7 +23,8 @@ await new Promise(r => setTimeout(r, 1500));
 console.log('[2/3] Launching Brave with CDP and session restore...');
 const child = spawn(braveExe, [
   '--remote-debugging-port=9222',
-  '--remote-allow-origins=*',
+  '--disable-background-timer-throttling',
+  '--disable-renderer-backgrounding',
   `--user-data-dir=${userData}`,
   '--restore-last-session'
 ], {

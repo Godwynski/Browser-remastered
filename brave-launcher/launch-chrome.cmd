@@ -37,7 +37,7 @@ taskkill /f /im chrome.exe >nul 2>&1
 ping -n 2 127.0.0.1 >nul
 
 echo [2/3] Launching Chrome on port 9222 with your personal profile...
-start "" "%CHROME_EXE%" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="%USER_DATA%" --restore-last-session
+start "" "%CHROME_EXE%" --remote-debugging-port=9222 --disable-background-timer-throttling --disable-renderer-backgrounding --user-data-dir="%USER_DATA%" --restore-last-session
 
 echo [3/3] Waiting for browser to initialize...
 ping -n 3 127.0.0.1 >nul

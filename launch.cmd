@@ -80,7 +80,7 @@ echo  Launching %NAME% with Port 9222 (Auto-Detected)
 echo ========================================================
 taskkill /f /im %PROC_NAME% >nul 2>&1
 ping -n 2 127.0.0.1 >nul
-start "" "%BROWSER_EXE%" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="%USER_DATA%" --restore-last-session
+start "" "%BROWSER_EXE%" --remote-debugging-port=9222 --disable-background-timer-throttling --disable-renderer-backgrounding --user-data-dir="%USER_DATA%" --restore-last-session
 ping -n 3 127.0.0.1 >nul
 
 curl -s http://127.0.0.1:9222/json/version >nul 2>&1

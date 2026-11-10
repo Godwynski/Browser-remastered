@@ -1,7 +1,7 @@
 {
   "name": "brave-mcp",
-  "version": "1.0.0",
-  "description": "Evidence-grounded browser control MCP server for Brave via Playwright CDP",
+  "version": "2.0.0",
+  "description": "Co-browsing MCP server: an AI agent and the user share one live Brave/Chromium browser over CDP",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
@@ -12,13 +12,12 @@
     "test:tokens": "node test/test-token-optimizations.js",
     "test:workflow": "node test/test-workflow.js",
     "test:healing": "node test/test-self-healing.js",
-    "test:cobrowse": "node test/test-battery.js",
+    "test:cobrowse": "node test/test-cobrowse.js",
     "test:fixes": "node test/test-audit-fixes.js",
-    "test:all": "npm run test:protocol && npm run test:tokens && npm run test:workflow && npm run test:healing && npm run test:battery && npm run test:fixes"
+    "test:all": "npm run test:protocol && npm run test:tokens && npm run test:workflow && npm run test:healing && npm run test:battery && npm run test:fixes && npm run test:cobrowse"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
-    "playwright-core": "^1.50.1",
-    "ws": "^8.21.3"
+    "playwright-core": "^1.50.1"
   }
 }

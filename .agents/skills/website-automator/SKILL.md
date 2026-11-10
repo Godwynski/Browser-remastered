@@ -20,7 +20,7 @@ To achieve **minimum code with maximum efficiency and minimum token usage**, fol
 │    ❌ DO NOT generate a script! 1-turn direct execution.    │
 ├─────────────────────────────────────────────────────────────┤
 │ 2. SEQUENTIAL WORKFLOW (3–10 steps)?                        │
-│    👉 Use brave_batch_act                                   │
+│    👉 Use brave_act steps                                   │
 │    ❌ DO NOT generate a script! Single-turn execution.      │
 ├─────────────────────────────────────────────────────────────┤
 │ 3. REPETITIVE LOOPS (Pagination, Bulk Clicks, Multi-Page)?  │
@@ -40,7 +40,7 @@ To achieve **minimum code with maximum efficiency and minimum token usage**, fol
 
 - **Reading content**: Always prefer `brave_read` over `brave_observe`. It extracts clean Markdown (~90% token reduction).
 - **Evaluating in-page metrics**: Always prefer `brave_eval` (e.g. `document.title`, `document.querySelectorAll('...').length`). Cost: ~30 tokens.
-- **Form submission / Sequences**: Pack multiple clicks and keystrokes into a single `brave_batch_act` call.
+- **Form submission / Sequences**: Pack multiple clicks and keystrokes into a single `brave_act (steps)` call.
 
 ---
 
@@ -107,4 +107,4 @@ export default run;
 
 1. **Never hardcode specific sites**: Use accessible ARIA roles, semantic HTML tags, or dynamically inferred selectors so workflows work across any site.
 2. **Never open secondary browser windows**: Always attach to the user's running Brave session on CDP port 9222.
-3. **Compound Settlement**: Let `and_observe: true` handle post-action state updates automatically.
+3. **Compound Settlement**: brave_act returns only what changed after each call (default observe: "delta"), so don't re-observe after acting.

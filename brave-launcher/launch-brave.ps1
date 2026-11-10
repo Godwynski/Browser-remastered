@@ -62,7 +62,7 @@ if ($BraveProcesses) {
         $BraveProcesses | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 1
         Write-Host "🚀 Relaunching your personal Brave profile with port $Port..." -ForegroundColor Cyan
-        $ArgsStr = "--remote-debugging-port=$Port --remote-allow-origins=* `"--user-data-dir=$UserData`" --restore-last-session"
+        $ArgsStr = "--remote-debugging-port=$Port --disable-background-timer-throttling --disable-renderer-backgrounding `"--user-data-dir=$UserData`" --restore-last-session"
         Start-Process -FilePath $BraveExe -ArgumentList $ArgsStr
     } else {
         Write-Host "Cancelled." -ForegroundColor Red
@@ -70,7 +70,7 @@ if ($BraveProcesses) {
     }
 } else {
     Write-Host "🚀 Launching Brave with port $Port..." -ForegroundColor Cyan
-    $ArgsStr = "--remote-debugging-port=$Port --remote-allow-origins=* `"--user-data-dir=$UserData`" --restore-last-session"
+    $ArgsStr = "--remote-debugging-port=$Port --disable-background-timer-throttling --disable-renderer-backgrounding `"--user-data-dir=$UserData`" --restore-last-session"
     Start-Process -FilePath $BraveExe -ArgumentList $ArgsStr
 }
 

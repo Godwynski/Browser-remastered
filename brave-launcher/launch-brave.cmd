@@ -31,7 +31,7 @@ taskkill /f /im brave.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 
 echo [2/3] Launching Brave on port 9222 with your personal profile...
-start "" "%BRAVE_EXE%" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="%USER_DATA%" --restore-last-session
+start "" "%BRAVE_EXE%" --remote-debugging-port=9222 --disable-background-timer-throttling --disable-renderer-backgrounding --user-data-dir="%USER_DATA%" --restore-last-session
 
 echo [3/3] Waiting for browser to initialize...
 timeout /t 2 /nobreak >nul

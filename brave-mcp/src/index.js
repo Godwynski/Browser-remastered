@@ -1,9 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema
-} from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { BraveManager } from './browser.js';
 import { BrowserObserver } from './observer.js';
@@ -11,1018 +8,366 @@ import { StateVerifier } from './verifier.js';
 import { ActionEngine } from './actions.js';
 import { ContentReader } from './reader.js';
 import { WorkflowEngine } from './workflow.js';
-import { globalTelemetry } from './telemetry-server.js';
+import { attachPage } from './page-hooks.js';
 
 const brave = new BraveManager();
 const observer = new BrowserObserver();
 const verifier = new StateVerifier(observer);
-const actionEngine = new ActionEngine(observer, verifier);
+const actions = new ActionEngine(observer, verifier);
 const reader = new ContentReader();
 const workflow = new WorkflowEngine(brave);
 
-const server = new Server(
+const INSTRUCTIONS = `Controls the user's real, already-open Brave browser. The user may be using it at the same time.
+- Observe once (brave_observe), then act (brave_act). Refs like e12 stay valid while the element exists. brave_act replies with only what changed: "+" new, "~" changed, "-" gone, text: new page text.
+- ref also accepts visible text ("Sign in"), role:text ("button:Save") or css ("css:#q"), so you can act without observing when the label is known.
+- Put known sequences in ONE brave_act via steps (goto, type, click, wait...). Steps stop at the first failure and you get the current state back.
+- Reading: brave_read (Markdown, paged by offset). For app-like sites, brave_read network:true lists the site's own JSON responses (often cheaper than the page). Bulk extraction: brave_eval or brave_workflow.
+- You keep your own tab: calls go there until you pass tab. New tabs open in the background. Only use focus if the user asks.
+- Dialogs, popups and downloads caused by your actions are handled and reported. Never act on the user's tab while they are typing in it.`;
+
+const S = (description, extra = {}) => ({ type: 'string', description, ...extra });
+const B = (description) => ({ type: 'boolean', description });
+const I = (description) => ({ type: 'integer', description });
+const TAB = S('Tab id (t3), index, or URL/title text. Omit to use your current tab.');
+
+const ACT_FIELDS = {
+  action: S('What to do', { enum: ['click', 'type', 'press', 'select', 'upload', 'hover', 'scroll', 'drag', 'goto', 'back', 'forward', 'reload', 'wait', 'eval', 'dialog'] }),
+  ref: S('Target: e12, visible text, role:text (button:Save), or css:selector'),
+  text: S('type: text to enter. wait: text to appear. dialog: prompt answer'),
+  enter: B('type: press Enter after'),
+  clear: B('type: false appends instead of replacing'),
+  key: S('press: Enter, Escape, Tab, ArrowDown, Control+a ...'),
+  value: S('select: option text or value'),
+  files: { type: 'array', items: { type: 'string' }, description: 'upload: absolute file paths' },
+  xy: { type: 'array', items: { type: 'number' }, description: '[x,y] viewport point instead of ref (canvas, maps)' },
+  to: S('drag: destination ref or "x,y"'),
+  url: S('goto: URL. wait: URL substring'),
+  dir: S('scroll direction (with ref: scrolls that container)', { enum: ['down', 'up', 'left', 'right', 'top', 'bottom'] }),
+  gone: S('wait: until this text disappears'),
+  ms: I('wait: fixed milliseconds'),
+  timeout: I('wait: max ms (default 10000)'),
+  script: S('eval: JS expression, or a body using return'),
+  accept: B('dialog: false to dismiss')
+};
+
+const TOOLS = [
   {
-    name: 'brave-control',
-    version: '1.0.0'
+    name: 'brave_tabs',
+    description: 'List, switch, open, close or focus tabs. List marks * = user is viewing, @ = your tab. switch/new make it your tab without stealing focus.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: S('Default list', { enum: ['list', 'switch', 'new', 'close', 'focus'] }),
+        tab: TAB,
+        url: S('new: URL to open')
+      }
+    }
   },
   {
-    capabilities: {
-      tools: {}
+    name: 'brave_observe',
+    description: 'Interactive elements of the page as "e12 role "name" ="value" [flags]", viewport first. Auto-limits to an open modal. Use brave_read for text content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab: TAB,
+        scope: S('CSS selector to limit to (e.g. form, main, #results)'),
+        filter: S('Only some elements', { enum: ['inputs', 'clickable'] }),
+        max: I('Max elements (default 50)'),
+        visible_only: B('Only elements in the viewport'),
+        screenshot: B('Attach a screenshot'),
+        labels: B('Draw refs on the screenshot (implies screenshot)'),
+        crop: S('CSS selector: screenshot only this element')
+      }
+    }
+  },
+  {
+    name: 'brave_read',
+    description: 'Page content as clean Markdown (headings, lists, tables, links), paged by offset. network:true lists the JSON/XHR responses the site loaded; response:n returns one body.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab: TAB,
+        scope: S('CSS selector of the content to read'),
+        offset: I('Character offset to continue from'),
+        max: I('Max characters (default 6000)'),
+        network: B('List recent XHR/fetch responses instead'),
+        response: I('Return the body of network response n')
+      }
+    }
+  },
+  {
+    name: 'brave_act',
+    description: 'Do one action, or several in order via steps, then return only what changed. Waits for the page to settle automatically.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab: TAB,
+        ...ACT_FIELDS,
+        steps: { type: 'array', items: { type: 'object' }, description: 'Several actions in order, each with the same fields as above' },
+        observe: S('After acting: delta (default, only changes), full, or none', { enum: ['delta', 'full', 'none'] }),
+        screenshot: B('Attach a screenshot after acting')
+      }
+    }
+  },
+  {
+    name: 'brave_eval',
+    description: 'Run JavaScript in the page and return the result (JSON). Best for bulk extraction. A body with return is wrapped in an async function.',
+    inputSchema: {
+      type: 'object',
+      required: ['script'],
+      properties: {
+        script: S('JS expression or function body'),
+        tab: TAB,
+        frame: S('Frame index or URL substring (default main frame)')
+      }
+    }
+  },
+  {
+    name: 'brave_workflow',
+    description: 'Loops without LLM turns: paginate_extract (items across pages), bulk_action (act on every match), run_script (scripts/workflows/<name>.js).',
+    inputSchema: {
+      type: 'object',
+      required: ['action'],
+      properties: {
+        action: S('Workflow', { enum: ['paginate_extract', 'bulk_action', 'run_script'] }),
+        tab: TAB,
+        itemSelector: S('paginate: CSS of each item'),
+        fields: { type: 'object', description: 'paginate: {key: CSS inside item}' },
+        nextSelector: S('paginate: CSS of the Next control'),
+        scrollMode: B('paginate: infinite scroll instead of Next'),
+        maxPages: I('paginate: default 5'),
+        maxItems: I('paginate: default 100'),
+        selector: S('bulk: CSS of elements'),
+        bulkType: S('bulk: default click', { enum: ['click', 'check', 'extract_attribute'] }),
+        attribute: S('bulk extract_attribute: attribute name'),
+        scriptName: S('run_script: file name'),
+        params: { type: 'object', description: 'run_script: parameters' }
+      }
     }
   }
-);
+];
 
-// Register list of available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'brave_tabs',
-        description:
-          'List, switch, create, close, or focus tabs in your running Brave Browser. Supports matching tabs by numeric index, URL substring, or title substring.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['list', 'switch', 'new', 'close', 'focus'],
-              description: 'Tab action to perform (default is "list"). "new" opens a new tab in your existing browser window.',
-              default: 'list'
-            },
-            index: {
-              description: 'Tab index (0-based) or tab title/URL substring to switch to, focus, or close'
-            },
-            query: {
-              type: 'string',
-              description: 'Optional filter query to match open tabs by title or URL (for action "list")'
-            },
-            url: {
-              type: 'string',
-              description: 'URL to navigate to when creating a new tab'
-            },
-            bringToFront: {
-              type: 'boolean',
-              description: 'Whether to bring the tab visually to the front (default false)',
-              default: false
-            },
-            and_observe: {
-              type: 'boolean',
-              description: 'When action is "new", whether to immediately return observation of the new tab (default false)',
-              default: false
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_observe',
-        description:
-          'Tri-source observation of a Brave tab (DOM state + ARIA semantic roles + optional Viewport Screenshot). ' +
-          'By default targets the isolated Agent Workspace window, keeping the user\'s personal window undisturbed. ' +
-          'Defaults to compact token-dense notation ("format": "compact") to minimize token usage.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window: "agent" (default: isolated agent window) or "user" (user\'s active personal window)',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index to observe'
-            },
-            format: {
-              type: 'string',
-              enum: ['compact', 'json'],
-              description: 'Output format: "compact" (dense 1-line syntax saving ~65% tokens) or "json" (full object tree)',
-              default: 'compact'
-            },
-            scope: {
-              type: 'string',
-              description: 'Optional CSS selector to scope observation to a specific container (e.g. "main", "#content", "form")'
-            },
-            filter: {
-              type: 'string',
-              enum: ['interactive', 'inputs', 'buttons_links', 'all'],
-              description: 'Filter element categories (default "interactive")',
-              default: 'interactive'
-            },
-            includeScreenshot: {
-              type: 'boolean',
-              description: 'Whether to capture and return a base64 viewport or cropped screenshot (default false for fast token-efficient reasoning)',
-              default: false
-            },
-            screenshotScope: {
-              type: 'string',
-              description: 'Optional CSS selector to crop screenshot to a specific element (e.g. "#login-box", "canvas", "table"). Saves 85%+ vision tokens.'
-            },
-            clip: {
-              type: 'object',
-              description: 'Optional bounding box { x, y, width, height } to crop screenshot. Saves 85%+ vision tokens.'
-            },
-            visibleOnly: {
-              type: 'boolean',
-              description: 'Only index elements currently inside the active viewport (omits offscreen elements for maximum token density)',
-              default: false
-            },
-            maxElements: {
-              type: 'integer',
-              description: 'Maximum number of interactive elements to index (default 60)',
-              default: 60
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_read',
-        description:
-          'Extracts clean Markdown article, documentation, or table content from the page with zero interactive element noise. ' +
-          'Provides ~90% token savings for reading documentation, articles, and data retrieval tasks.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window (default: "agent")',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index'
-            },
-            scope: {
-              type: 'string',
-              description: 'Optional CSS selector to scope content extraction (e.g. "article", "#main-content", "table")'
-            },
-            maxLength: {
-              type: 'integer',
-              description: 'Maximum characters to extract (default 6000)',
-              default: 6000
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_act',
-        description:
-          'Executes an autonomous, browser-native action against the targeted Brave tab with multi-tier self-healing and direct coordinate/vision fallbacks. ' +
-          'DIRECT EXECUTION: Execute immediately without conversational preamble or chain-of-thought commentary. ' +
-          'Supports clicking, typing, pressing keys, scrolling, dragging, selecting dropdowns, uploading files, and direct coordinate interaction (for canvas, maps, SVG, and stubborn UI).',
-        inputSchema: {
-          type: 'object',
-          required: ['action'],
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['click', 'type', 'press', 'scroll', 'hover', 'drag', 'select_option', 'upload_file'],
-              description: 'The browser action to execute'
-            },
-            coordinate: {
-              type: 'array',
-              items: { type: 'number' },
-              description: 'Direct screen coordinate [x, y] to click, type, or hover. Universal fallback that bypasses DOM inspection (ideal for canvas, WebGL, SVG, charts, and maps).'
-            },
-            clickCount: {
-              type: 'integer',
-              description: 'Number of clicks for action "click" (e.g. 2 for double-click, 3 for triple-click). Default 1.',
-              default: 1
-            },
-            button: {
-              type: 'string',
-              enum: ['left', 'right', 'middle'],
-              description: 'Mouse button for click action (default "left"). Set to "right" for context menus.',
-              default: 'left'
-            },
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window: "agent" (default: isolated agent window) or "user" (user\'s active personal window)',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index to act on'
-            },
-            ref: {
-              type: 'string',
-              description: "The ephemeral element reference from brave_observe (e.g. 'e1', 'e2'). Required unless coordinate is provided."
-            },
-            obs_id: {
-              type: 'string',
-              description: "The observation ID from brave_observe (e.g. 'obs_1710928...'). Recommended to prevent stale element misclicks."
-            },
-            text: {
-              type: 'string',
-              description: "Text to type into input or textarea (required for action 'type')"
-            },
-            pressEnter: {
-              type: 'boolean',
-              description: "Whether to press Enter immediately after typing (useful for search inputs)",
-              default: false
-            },
-            clear: {
-              type: 'boolean',
-              description: "Whether to clear existing text before typing (default true)",
-              default: true
-            },
-            startCoordinate: {
-              type: 'array',
-              items: { type: 'number' },
-              description: "Starting [x, y] coordinate for action 'drag'"
-            },
-            endCoordinate: {
-              type: 'array',
-              items: { type: 'number' },
-              description: "Ending [x, y] coordinate for action 'drag'"
-            },
-            startRef: {
-              type: 'string',
-              description: "Starting element ref for action 'drag'"
-            },
-            endRef: {
-              type: 'string',
-              description: "Ending element ref for action 'drag'"
-            },
-            steps: {
-              type: 'integer',
-              description: "Number of intermediate mouse movement steps for action 'drag' (default 15)",
-              default: 15
-            },
-            key: {
-              type: 'string',
-              description: "Keyboard key to press for action 'press' (e.g. 'Enter', 'Tab', 'Escape', 'ArrowDown')"
-            },
-            direction: {
-              type: 'string',
-              enum: ['down', 'up', 'top', 'bottom'],
-              description: "Scroll direction for action 'scroll' (default 'down')",
-              default: 'down'
-            },
-            amount: {
-              type: 'integer',
-              description: "Scroll amount in pixels (default 500)",
-              default: 500
-            },
-            value: {
-              type: 'string',
-              description: "Option value to select for action 'select_option'"
-            },
-            filePaths: {
-              type: 'array',
-              items: { type: 'string' },
-              description: "Array of absolute local file paths for action 'upload_file'"
-            },
-            and_observe: {
-              type: 'boolean',
-              description: "Whether to wait for DOM settlement and automatically return the next observation in the same response (default true for 50% fewer turns)",
-              default: true
-            },
-            includeScreenshot: {
-              type: 'boolean',
-              description: "Whether to include post-action screenshot in receipt (default false for maximum speed and token efficiency)",
-              default: false
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_batch_act',
-        description:
-          'Executes an array of sequential browser actions in a single tool call without multi-turn LLM loops. ' +
-          'DIRECT EXECUTION: Batch all sequential steps (e.g. fill inputs, click submit) in 1 turn without narrative commentary. ' +
-          'Saves significant conversation context tokens and eliminates round-trip latency.',
-        inputSchema: {
-          type: 'object',
-          required: ['actions'],
-          properties: {
-            actions: {
-              type: 'array',
-              items: { type: 'object' },
-              description: 'List of action objects (same parameters as brave_act: action, ref, obs_id, text, etc.)'
-            },
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window (default: "agent")',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index'
-            },
-            includeScreenshot: {
-              type: 'boolean',
-              description: 'Whether to include final post-action screenshot (default false)',
-              default: false
-            },
-            and_observe: {
-              type: 'boolean',
-              description: 'Whether to return the final observation after all batch actions complete (default true for 50% fewer turns)',
-              default: true
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_eval',
-        description:
-          'Executes JavaScript expression in the targeted Brave tab and returns the evaluated result directly. ' +
-          'Ideal for high-speed scraping, bulk extractions, or direct DOM manipulation with zero token observation overhead.',
-        inputSchema: {
-          type: 'object',
-          required: ['script'],
-          properties: {
-            script: {
-              type: 'string',
-              description: 'JavaScript code or expression to evaluate (e.g. "document.title" or "Array.from(document.querySelectorAll(\'a\')).map(a => a.href)")'
-            },
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window (default: "agent")',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index'
-            },
-            frameIndex: {
-              type: 'integer',
-              description: 'Optional frame index to evaluate script inside'
-            },
-            frameUrl: {
-              type: 'string',
-              description: 'Optional partial URL of frame to evaluate script inside'
-            },
-            listFrames: {
-              type: 'boolean',
-              description: 'If true, lists all frames on the page'
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_navigate',
-        description:
-          'Navigates the targeted Brave tab to a new URL, reloads, or navigates back/forward. ' +
-          'By default navigates inside the isolated Agent Workspace window, completely preserving the user\'s personal browsing tabs.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: {
-              type: 'string',
-              description: "Destination URL (e.g. 'https://github.com'). Required for action 'goto'."
-            },
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window: "agent" (default: isolated agent window) or "user" (user\'s personal window)',
-              default: 'agent'
-            },
-            tabIndex: {
-              description: 'Optional specific tab index (0-based) or tab title/URL substring'
-            },
-            action: {
-              type: 'string',
-              enum: ['goto', 'reload', 'back', 'forward'],
-              description: "Navigation action (default 'goto')",
-              default: 'goto'
-            },
-            and_observe: {
-              type: 'boolean',
-              description: 'Whether to automatically wait for settlement and return observation of the new page in 1 turn (default true)',
-              default: true
-            },
-            format: {
-              type: 'string',
-              enum: ['compact', 'json'],
-              description: 'Output format when and_observe is true (default "compact")',
-              default: 'compact'
-            },
-            timeout: {
-              type: 'integer',
-              description: 'Navigation timeout in milliseconds (default 15000)',
-              default: 15000
-            }
-          }
-        }
-      },
-      {
-        name: 'brave_workflow',
-        description:
-          'Executes high-speed multi-step repetitive operations (pagination scraping, bulk clicking, or zero-token compiled workflow scripts) across ANY website in a single tool call without intermediate LLM loops.',
-        inputSchema: {
-          type: 'object',
-          required: ['action'],
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['paginate_extract', 'bulk_action', 'run_script'],
-              description: 'Workflow action: "paginate_extract" (loops through pages and scrapes items), "bulk_action" (acts on all matching elements on page), or "run_script" (executes reusable script from scripts/workflows/)'
-            },
-            target: {
-              type: 'string',
-              enum: ['agent', 'user'],
-              description: 'Target window (default: "agent")',
-              default: 'agent'
-            },
-            tabIndex: {
-              type: 'integer',
-              description: 'Optional specific tab index'
-            },
-            itemSelector: {
-              type: 'string',
-              description: 'CSS selector for repeating cards/items/rows to extract across pages (for paginate_extract)'
-            },
-            nextSelector: {
-              type: 'string',
-              description: 'CSS selector for the Next button/link (for paginate_extract)'
-            },
-            scrollMode: {
-              type: 'boolean',
-              description: 'If true, uses infinite scrolling instead of clicking next button (default false)',
-              default: false
-            },
-            maxPages: {
-              type: 'integer',
-              description: 'Maximum pages to traverse (default 5)',
-              default: 5
-            },
-            maxItems: {
-              type: 'integer',
-              description: 'Maximum total items to collect (default 100)',
-              default: 100
-            },
-            fields: {
-              type: 'object',
-              description: 'Optional dictionary mapping custom output keys to CSS selectors inside itemSelector (for paginate_extract)'
-            },
-            pageDelay: {
-              type: 'integer',
-              description: 'Delay in ms between page transitions (default 800)',
-              default: 800
-            },
-            selector: {
-              type: 'string',
-              description: 'CSS selector targeting multiple elements (for bulk_action)'
-            },
-            bulkType: {
-              type: 'string',
-              enum: ['click', 'check', 'extract_attribute'],
-              description: 'Bulk action to execute on all matching elements (default "click")',
-              default: 'click'
-            },
-            attribute: {
-              type: 'string',
-              description: 'Attribute name if bulkType is "extract_attribute" (e.g. "href", "src", "data-id")'
-            },
-            maxElements: {
-              type: 'integer',
-              description: 'Maximum elements to act on (default 50)',
-              default: 50
-            },
-            delayMs: {
-              type: 'integer',
-              description: 'Delay in ms between individual bulk actions (default 150)',
-              default: 150
-            },
-            scriptName: {
-              type: 'string',
-              description: 'Name of script in brave-mcp/scripts/workflows/ (for run_script)'
-            },
-            params: {
-              type: 'object',
-              description: 'JSON parameters to pass to the workflow script'
-            }
-          }
-        }
-      }
-    ]
-  };
-});
+// ---------- formatting helpers ----------
+const json = (v) => JSON.stringify(v);
+const clip = (s, n = 12000) => (s.length > n ? s.slice(0, n) + `\n…[truncated ${s.length - n} chars]` : s);
 
-// Handle tool execution requests
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
+function shortUrl(u) {
   try {
-    switch (name) {
-      case 'brave_tabs': {
-        const action = args?.action || 'list';
-
-        if (action === 'list') {
-          let tabs = await brave.listTabs();
-          if (args?.query) {
-            const q = args.query.toLowerCase();
-            tabs = tabs.filter(t => (t.title && t.title.toLowerCase().includes(q)) || (t.url && t.url.toLowerCase().includes(q)));
-          }
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ tabs, count: tabs.length }, null, 2)
-              }
-            ]
-          };
-        }
-
-        const targetIdx = args?.index !== undefined ? args.index : args?.tabIndex;
-
-        if (action === 'switch') {
-          if (targetIdx === undefined) {
-            throw new Error("Parameter 'index' or 'tabIndex' is required for action 'switch'.");
-          }
-          const page = await brave.setActivePage(targetIdx, { bringToFront: args.bringToFront ?? true });
-          const pages = await brave.getPages();
-          const activeIdx = pages.indexOf(page);
-          observer.invalidate(page);
-          const title = await page.title().catch(() => '');
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ success: true, activeTabIndex: activeIdx, title, url: page.url() }, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (action === 'new') {
-          const page = await brave.newTab(args.url || 'about:blank');
-          const pages = await brave.getPages();
-          const tabIndex = pages.indexOf(page);
-          let observation = null;
-          if (args?.and_observe && args.url && args.url !== 'about:blank') {
-            observation = await observer.observe(page, { format: 'compact' });
-          }
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({
-                  success: true,
-                  tabIndex,
-                  url: page.url(),
-                  observation: observation ? observation.elements_compact : undefined
-                }, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (action === 'focus') {
-          const page = await brave.getTargetPage('active', targetIdx ?? null);
-          await page.bringToFront().catch(() => {});
-          const title = await page.title().catch(() => '');
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ success: true, message: 'Tab brought to front', title, url: page.url() }, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (action === 'close') {
-          if (targetIdx === undefined) {
-            throw new Error("Parameter 'index' or 'tabIndex' is required for action 'close'.");
-          }
-          await brave.closeTab(targetIdx);
-          observer.invalidate();
-          const tabs = await brave.listTabs();
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ success: true, closedIndex: targetIdx, remainingTabs: tabs }, null, 2)
-              }
-            ]
-          };
-        }
-
-        throw new Error(`Unknown tabs action '${action}'.`);
-      }
-
-      case 'brave_observe': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const observation = await observer.observe(page, {
-          includeScreenshot: args?.includeScreenshot ?? false,
-          screenshotScope: args?.screenshotScope || null,
-          clip: args?.clip || null,
-          maxElements: args?.maxElements ?? 60,
-          format: args?.format || 'compact',
-          scope: args?.scope || null,
-          filter: args?.filter || 'interactive',
-          visibleOnly: args?.visibleOnly ?? false,
-          directives: globalTelemetry.directives.slice(-3)
-        });
-
-        let responseText = '';
-        if (args?.format === 'json') {
-          responseText = JSON.stringify(
-            {
-              obs_id: observation.obs_id,
-              target: args?.target || 'agent',
-              tab: observation.tab,
-              page: observation.page,
-              alerts: observation.alerts,
-              directives: observation.directives || [],
-              element_count: observation.element_count,
-              elements: observation.elements
-            },
-            null,
-            2
-          );
-        } else {
-          responseText = observation.elements_compact;
-        }
-
-        const content = [
-          {
-            type: 'text',
-            text: responseText
-          }
-        ];
-
-        if (observation.screenshot) {
-          content.push({
-            type: 'text',
-            text: `[Screenshot attached (${observation.screenshot_scope || 'viewport'}): ${observation.screenshot.slice(0, 100)}... (${observation.screenshot.length} chars)]`
-          });
-        }
-
-        return { content };
-      }
-
-      case 'brave_read': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const article = await reader.extract(page, {
-          scope: args?.scope || null,
-          maxLength: args?.maxLength || 6000
-        });
-
-        const header = `# READ: ${article.title}\nURL: ${article.url}\n(Words: ~${article.wordCount} | Reading time: ~${article.readingTimeMin} min)\n`;
-        const text = `${header}\n${article.markdown}`;
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text
-            }
-          ]
-        };
-      }
-
-      case 'brave_eval': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-
-        if (args?.listFrames) {
-          const frames = page.frames().map((f, i) => ({
-            index: i,
-            url: f.url(),
-            name: f.name()
-          }));
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify({ status: 'FramesListed', frames }, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (!args?.script) {
-          throw new Error("Parameter 'script' is required for action 'brave_eval'.");
-        }
-
-        let targetExecution = page;
-        if (args?.frameIndex !== undefined && args?.frameIndex !== null) {
-          const frames = page.frames();
-          if (args.frameIndex < 0 || args.frameIndex >= frames.length) {
-            throw new Error(`Frame index ${args.frameIndex} out of range (0 to ${frames.length - 1}).`);
-          }
-          targetExecution = frames[args.frameIndex];
-        } else if (args?.frameUrl) {
-          const frame = page.frames().find(f => f.url().includes(args.frameUrl));
-          if (!frame) {
-            throw new Error(`Frame with URL matching "${args.frameUrl}" not found.`);
-          }
-          targetExecution = frame;
-        }
-
-        const result = await targetExecution.evaluate(args.script);
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(
-                {
-                  status: 'Evaluated',
-                  target: args?.target || 'agent',
-                  frameUrl: targetExecution !== page ? targetExecution.url() : undefined,
-                  result
-                },
-                null,
-                2
-              )
-            }
-          ]
-        };
-      }
-
-      case 'brave_batch_act': {
-        if (!args?.actions || !Array.isArray(args.actions) || args.actions.length === 0) {
-          throw new Error("Parameter 'actions' (non-empty array of action objects) is required for 'brave_batch_act'.");
-        }
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const andObserve = args?.and_observe !== false;
-        const receipts = [];
-        let lastReceipt = null;
-        let batchError = null;
-
-        for (let i = 0; i < args.actions.length; i++) {
-          const isLast = i === args.actions.length - 1;
-          const actionArgs = {
-            ...args.actions[i],
-            includeScreenshot: isLast ? (args.includeScreenshot ?? false) : false
-          };
-          try {
-            const receipt = await actionEngine.execute(page, actionArgs, {
-              suppressInvalidate: !isLast,
-              andObserve: isLast && andObserve
-            });
-            lastReceipt = receipt;
-            receipts.push({
-              step: i + 1,
-              action: receipt.action,
-              executed: receipt.executed,
-              changes: receipt.changes
-            });
-          } catch (err) {
-            batchError = `Step ${i + 1} failed: ${err.message}`;
-            receipts.push({
-              step: i + 1,
-              action: { type: actionArgs.action, ref: actionArgs.ref },
-              executed: false,
-              changes: [batchError]
-            });
-            break;
-          }
-        }
-
-        let resultText = '';
-        if (args?.format === 'json') {
-          resultText = JSON.stringify(
-            {
-              status: batchError ? 'Batch Partially Executed' : 'Batch Executed',
-              error: batchError || undefined,
-              target: args?.target || 'agent',
-              steps_completed: receipts.filter(r => r.executed).length,
-              receipts,
-              nextObservation: lastReceipt?.nextObservation
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = `${batchError ? 'BATCH HALTED ON ERROR' : 'BATCH COMPLETED'} (${receipts.length} steps processed):\n`;
-          receipts.forEach(r => {
-            resultText += `- Step ${r.step} [${r.executed ? 'OK' : 'FAIL'}]: ${r.changes.join('; ')}\n`;
-          });
-          if (batchError) {
-            resultText += `\nERROR: ${batchError}\n`;
-          }
-          if (lastReceipt?.nextObservation) {
-            resultText += `\n${lastReceipt.nextObservation.elements_compact}`;
-          }
-        }
-
-        const content = [
-          {
-            type: 'text',
-            text: resultText
-          }
-        ];
-
-        if (lastReceipt?.screenshot) {
-          content.push({
-            type: 'text',
-            text: `[Post-action screenshot: ${lastReceipt.screenshot.slice(0, 100)}... (${lastReceipt.screenshot.length} chars)]`
-          });
-        }
-
-        return { content };
-      }
-
-      case 'brave_act': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const andObserve = args?.and_observe !== false;
-        const receipt = await actionEngine.execute(page, args, { andObserve });
-
-        let resultText = '';
-        if (args?.format === 'json') {
-          resultText = JSON.stringify(
-            {
-              status: 'Action Executed',
-              target: args?.target || 'agent',
-              receipt: {
-                action: receipt.action,
-                executed: receipt.executed,
-                before: receipt.before,
-                after: receipt.after,
-                changes: receipt.changes,
-                nextObservation: receipt.nextObservation
-              }
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = `OK: Action '${receipt.action.type}' executed successfully.\n`;
-          if (receipt.changes && receipt.changes.length > 0) {
-            resultText += `CHANGES: ${receipt.changes.join('; ')}\n`;
-          }
-          if (receipt.after && receipt.before && receipt.before.url !== receipt.after.url) {
-            resultText += `NAVIGATED: ${receipt.after.url}\n`;
-          }
-          if (receipt.nextObservation) {
-            resultText += `\n${receipt.nextObservation.elements_compact}`;
-          }
-        }
-
-        const content = [
-          {
-            type: 'text',
-            text: resultText
-          }
-        ];
-
-        if (receipt.screenshot) {
-          content.push({
-            type: 'text',
-            text: `[Post-action screenshot: ${receipt.screenshot.slice(0, 100)}... (${receipt.screenshot.length} chars)]`
-          });
-        }
-
-        return { content };
-      }
-
-      case 'brave_navigate': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const action = args?.action || 'goto';
-        const timeout = args?.timeout || 15000;
-        const andObserve = args?.and_observe !== false;
-
-        let beforeUrl = page.url();
-        let status = 'navigated';
-
-        if (action === 'goto') {
-          if (!args.url) throw new Error("Parameter 'url' is required for action 'goto'.");
-          let targetUrl = args.url.trim();
-          const isLocal = /^(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(targetUrl);
-          const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(targetUrl);
-          if (!hasScheme) {
-            targetUrl = isLocal ? `http://${targetUrl}` : `https://${targetUrl}`;
-          }
-          await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout });
-        } else if (action === 'reload') {
-          await page.reload({ waitUntil: 'domcontentloaded', timeout });
-        } else if (action === 'back') {
-          await page.goBack({ waitUntil: 'domcontentloaded', timeout });
-        } else if (action === 'forward') {
-          await page.goForward({ waitUntil: 'domcontentloaded', timeout });
-        } else {
-          throw new Error(`Unknown navigate action '${action}'. Supported: goto, reload, back, forward.`);
-        }
-
-        observer.invalidate(page);
-        const afterUrl = page.url();
-        const title = await page.title().catch(() => '');
-
-        let nextObservation = null;
-        if (andObserve) {
-          nextObservation = await observer.observe(page, { format: args?.format || 'compact' });
-        }
-
-        let resultText = '';
-        if (args?.format === 'json') {
-          resultText = JSON.stringify(
-            {
-              target: args?.target || 'agent',
-              action,
-              status,
-              beforeUrl,
-              afterUrl,
-              title,
-              nextObservation
-            },
-            null,
-            2
-          );
-        } else {
-          resultText = `OK: Navigated [${action}] to ${afterUrl} ("${title}")\n`;
-          if (nextObservation) {
-            resultText += `\n${nextObservation.elements_compact}`;
-          }
-        }
-
-        return {
-          content: [
-            {
-              type: 'text',
-              text: resultText
-            }
-          ]
-        };
-      }
-
-      case 'brave_workflow': {
-        const page = await brave.getTargetPage(args?.target || 'agent', args?.tabIndex);
-        const action = args?.action;
-
-        if (action === 'paginate_extract') {
-          const result = await workflow.paginateExtract(page, {
-            itemSelector: args?.itemSelector,
-            nextSelector: args?.nextSelector,
-            scrollMode: args?.scrollMode ?? false,
-            maxPages: args?.maxPages || 5,
-            maxItems: args?.maxItems || 100,
-            pageDelay: args?.pageDelay || 800,
-            fields: args?.fields || null
-          });
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (action === 'bulk_action') {
-          const result = await workflow.bulkAction(page, {
-            selector: args?.selector,
-            action: args?.bulkType || 'click',
-            attribute: args?.attribute || 'href',
-            maxElements: args?.maxElements || 50,
-            delayMs: args?.delayMs ?? 150
-          });
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }
-            ]
-          };
-        }
-
-        if (action === 'run_script') {
-          const result = await workflow.runScript(page, args?.scriptName, args?.params || {});
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(result, null, 2)
-              }
-            ]
-          };
-        }
-
-        throw new Error(`Unknown workflow action '${action}'. Supported: paginate_extract, bulk_action, run_script.`);
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
-  } catch (err) {
-    return {
-      isError: true,
-      content: [
-        {
-          type: 'text',
-          text: `Error executing ${name}: ${err.message}`
-        }
-      ]
-    };
-  }
-});
-
-// Start stdio transport
-async function main() {
-  await globalTelemetry.start();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+    const x = new URL(u);
+    if (!/^https?:$/.test(x.protocol)) return u.slice(0, 60);
+    const s = x.host + x.pathname.replace(/\/$/, '');
+    return s.length > 70 ? s.slice(0, 69) + '…' : s;
+  } catch (_) { return String(u).slice(0, 70); }
 }
 
-main().catch((error) => {
-  console.error("Fatal error in brave-mcp server:", error);
+function imagePart(dataUrl) {
+  if (!dataUrl) return null;
+  const m = /^data:(image\/\w+);base64,(.+)$/.exec(dataUrl);
+  return m ? { type: 'image', mimeType: m[1], data: m[2] } : null;
+}
+
+function reply(text, image = null) {
+  const content = [{ type: 'text', text }];
+  const img = imagePart(image);
+  if (img) content.push(img);
+  return { content };
+}
+
+async function tabLines() {
+  const tabs = await brave.listTabs();
+  return tabs.map(t => `${t.id}${t.isAgent ? '@' : ''}${t.isActive ? '*' : ''} ${t.title.length > 50 ? t.title.slice(0, 49) + '…' : t.title} — ${shortUrl(t.url)}`).join('\n');
+}
+
+const pick = (...vals) => vals.find(v => v !== undefined && v !== null && v !== '');
+
+// ---------- handlers ----------
+async function handleTabs(a) {
+  const action = a.action || 'list';
+  const tab = pick(a.tab, a.index, a.tabIndex);
+  if (action === 'list') return reply(await tabLines());
+
+  if (action === 'switch' || action === 'focus') {
+    const page = tab !== undefined ? await brave.setActivePage(tab, { bringToFront: action === 'focus' || a.bringToFront === true }) : await brave.getTargetPage();
+    if (action === 'focus' && tab === undefined) await page.bringToFront().catch(() => {});
+    if (action === 'focus') return reply(`ok focused ${brave.tabId(page)} for the user`);
+    const obs = await observer.observe(page, { tabId: brave.tabId(page) });
+    return reply(`ok your tab is now ${brave.tabId(page)}\n${obs.elements_compact}`);
+  }
+
+  if (action === 'new') {
+    const page = await brave.newTab(a.url || 'about:blank');
+    if (!a.url || a.url === 'about:blank') return reply(`ok opened ${brave.tabId(page)} in the background (your tab)`);
+    const obs = await observer.observe(page, { tabId: brave.tabId(page) });
+    return reply(`ok opened ${brave.tabId(page)} in the background (your tab)\n${obs.elements_compact}`);
+  }
+
+  if (action === 'close') {
+    if (tab === undefined) throw new Error("close needs 'tab'.");
+    await brave.closeTab(tab);
+    return reply(`ok closed ${tab}\n${await tabLines()}`);
+  }
+  throw new Error(`Unknown tabs action '${action}'.`);
+}
+
+async function handleObserve(a) {
+  const page = await brave.getTargetPage(null, pick(a.tab, a.tabIndex));
+  const crop = pick(a.crop, a.screenshotScope);
+  const obs = await observer.observe(page, {
+    tabId: brave.tabId(page),
+    scope: a.scope,
+    filter: a.filter,
+    maxElements: pick(a.max, a.maxElements) ?? 50,
+    visibleOnly: a.visible_only ?? a.visibleOnly ?? false,
+    includeScreenshot: Boolean(a.screenshot || a.includeScreenshot || a.labels || crop || a.clip),
+    labels: Boolean(a.labels),
+    screenshotScope: crop,
+    clip: a.clip
+  });
+  return reply(obs.elements_compact, obs.screenshot);
+}
+
+async function handleRead(a) {
+  const page = await brave.getTargetPage(null, pick(a.tab, a.tabIndex));
+  const max = pick(a.max, a.maxLength) ?? 6000;
+  const offset = a.offset ?? 0;
+
+  if (a.network || a.response !== undefined) {
+    const bm = attachPage(page);
+    if (a.response === undefined) {
+      if (!bm.net.length) return reply('(no XHR/fetch responses captured yet; they are recorded once the agent uses this tab. Reload or interact, then ask again)');
+      return reply(bm.net.slice(-25).map(r => `n${r.n} ${r.method} ${r.status} ${r.ctype || '?'}${r.size ? ' ' + (r.size > 1024 ? (r.size / 1024).toFixed(1) + 'KB' : r.size + 'B') : ''} ${shortUrl(r.url)}${new URL(r.url).search.slice(0, 60)}`).join('\n'));
+    }
+    const entry = bm.net.find(r => r.n === Number(a.response));
+    if (!entry) throw new Error(`No network response n${a.response}. Use network:true to list.`);
+    let body;
+    try { body = await entry.resp.text(); } catch (_) { throw new Error('That response body is no longer available (the page navigated). Re-trigger it and list again.'); }
+    try { body = JSON.stringify(JSON.parse(body)); } catch (_) {}
+    const chunk = body.slice(offset, offset + max);
+    const more = offset + max < body.length ? `\n[more: offset=${offset + max} of ${body.length}]` : '';
+    return reply(`n${entry.n} ${entry.method} ${entry.url}\n${chunk}${more}`);
+  }
+
+  const r = await reader.extract(page, { scope: a.scope, maxLength: max, offset });
+  const range = r.totalChars > max || offset ? ` | chars ${r.offset}-${r.offset + r.markdown.length} of ${r.totalChars}` : '';
+  const more = r.nextOffset ? `\n[more: offset=${r.nextOffset}]` : '';
+  return reply(`# ${r.title}\n${shortUrl(r.url)} | ~${r.wordCount} words${range}\n\n${r.markdown}${more}`);
+}
+
+async function handleAct(a) {
+  let page = await brave.getTargetPage(null, pick(a.tab, a.tabIndex));
+  const steps = Array.isArray(a.steps) && a.steps.length ? a.steps : (Array.isArray(a.actions) && a.actions.length ? a.actions : [a]);
+  const mode = a.observe || (a.and_observe === false ? 'none' : 'delta');
+  const multi = steps.length > 1;
+  const lines = [];
+  let last = null, failed = null;
+
+  for (let i = 0; i < steps.length; i++) {
+    const isLast = i === steps.length - 1;
+    const step = { ...steps[i] };
+    if (isLast && (a.screenshot || a.includeScreenshot)) step.includeScreenshot = true;
+    const prefix = multi ? `${i + 1}. ` : '';
+    try {
+      const r = await actions.execute(page, step, { observe: isLast ? mode : 'none', tabId: brave.tabId(page) });
+      lines.push(`${prefix}ok ${r.changes.join(' | ')}`);
+      if (r.newPage) {
+        page = r.newPage;
+        brave.agentPage = page;
+        lines.push(`→ opened new tab ${brave.tabId(page)} (now your tab)`);
+      }
+      last = r;
+    } catch (err) {
+      failed = err;
+      lines.push(`${prefix}FAIL ${step.action || '?'}${step.ref ? ' ' + step.ref : ''}: ${err.message}`);
+      if (multi && i < steps.length - 1) lines.push(`(steps ${i + 2}-${steps.length} not run)`);
+      break;
+    }
+  }
+
+  let obsText = last?.nextObservation?.elements_compact;
+  if (failed && mode !== 'none') {
+    // Give the agent the current state so it can recover without another call.
+    obsText = await observer.observe(page, { delta: true, tabId: brave.tabId(page) }).then(o => o.elements_compact).catch(() => null);
+  }
+  const text = lines.join('\n') + (obsText ? `\n${obsText}` : '');
+  const out = reply(text, last?.screenshot);
+  if (failed && !last) out.isError = true;
+  return out;
+}
+
+async function handleEval(a) {
+  const page = await brave.getTargetPage(null, pick(a.tab, a.tabIndex));
+  if (a.listFrames) return reply(page.frames().map((f, i) => `${i} ${shortUrl(f.url())}${f.name() ? ' name=' + f.name() : ''}`).join('\n'));
+  if (!a.script) throw new Error("'script' is required.");
+  let target = page;
+  const frame = pick(a.frame, a.frameIndex, a.frameUrl);
+  if (frame !== undefined) {
+    const frames = page.frames();
+    target = /^\d+$/.test(String(frame)) ? frames[Number(frame)] : frames.find(f => f.url().includes(String(frame)));
+    if (!target) throw new Error(`Frame "${frame}" not found. Frames:\n${frames.map((f, i) => `${i} ${shortUrl(f.url())}`).join('\n')}`);
+  }
+  const result = await actions._eval(target, a.script);
+  const text = result === undefined ? 'undefined' : typeof result === 'string' ? result : json(result);
+  return reply(clip(text));
+}
+
+async function handleWorkflow(a) {
+  const page = await brave.getTargetPage(null, pick(a.tab, a.tabIndex));
+  let result;
+  if (a.action === 'paginate_extract') {
+    result = await workflow.paginateExtract(page, {
+      itemSelector: a.itemSelector,
+      nextSelector: a.nextSelector,
+      scrollMode: a.scrollMode ?? false,
+      maxPages: a.maxPages || 5,
+      maxItems: a.maxItems || 100,
+      pageDelay: a.pageDelay || 800,
+      fields: a.fields || null
+    });
+  } else if (a.action === 'bulk_action') {
+    result = await workflow.bulkAction(page, {
+      selector: a.selector,
+      action: a.bulkType || 'click',
+      attribute: a.attribute || 'href',
+      maxElements: a.maxElements || 50,
+      delayMs: a.delayMs ?? 150
+    });
+  } else if (a.action === 'run_script') {
+    result = await workflow.runScript(page, a.scriptName, a.params || {});
+  } else {
+    throw new Error(`Unknown workflow action '${a.action}'.`);
+  }
+  return reply(clip(json(result)));
+}
+
+// Old tool names keep working (not advertised, so they cost no schema tokens).
+function legacy(name, a) {
+  if (name === 'brave_batch_act') return ['brave_act', { ...a, steps: a.actions }];
+  if (name === 'brave_navigate') return ['brave_act', { ...a, action: a.action && a.action !== 'goto' ? a.action : 'goto', tab: pick(a.tab, a.tabIndex), observe: a.and_observe === false ? 'none' : 'full' }];
+  return [name, a];
+}
+
+const HANDLERS = {
+  brave_tabs: handleTabs,
+  brave_observe: handleObserve,
+  brave_read: handleRead,
+  brave_act: handleAct,
+  brave_eval: handleEval,
+  brave_workflow: handleWorkflow
+};
+
+const server = new Server({ name: 'brave-control', version: '2.0.0' }, { capabilities: { tools: {} }, instructions: INSTRUCTIONS });
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const [name, args] = legacy(request.params.name, request.params.arguments || {});
+  const handler = HANDLERS[name];
+  try {
+    if (!handler) throw new Error(`Unknown tool: ${name}`);
+    return await handler(args);
+  } catch (err) {
+    return { isError: true, content: [{ type: 'text', text: `Error: ${String(err.message || err).split('\n').slice(0, 4).join('\n')}` }] };
+  }
+});
+server.connect(new StdioServerTransport()).catch((error) => {
+  console.error('Fatal error in brave-mcp server:', error);
   process.exit(1);
 });

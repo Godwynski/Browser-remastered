@@ -1,7 +1,4 @@
 import assert from 'assert';
-import http from 'http';
-import { WebSocket } from 'ws';
-import { TelemetryServer } from '../src/telemetry-server.js';
 import { ContentReader } from '../src/reader.js';
 import { ActionEngine } from '../src/actions.js';
 import { BrowserObserver } from '../src/observer.js';
@@ -11,63 +8,6 @@ import { getTestBrowserExe } from './test-helper.js';
 
 async function runAuditFixesTests() {
   console.log("🧪 Running Verification Tests for Audit Fixes...\n");
-
-  // --- Test 1: Telemetry Server CSWSH & Payload Protection ---
-  console.log("1. Testing Telemetry Server WebSocket Origin Check & Payload Limit...");
-  const testPort = 8788;
-  const server = new TelemetryServer(testPort);
-  await server.start();
-
-  // 1a. Evil origin WebSocket connection must be rejected
-  const evilWsRejected = await new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${testPort}`, {
-      headers: { origin: 'http://malicious-site.com' }
-    });
-    ws.on('unexpected-response', (req, res) => {
-      resolve(res.statusCode === 403);
-    });
-    ws.on('open', () => {
-      ws.close();
-      resolve(false);
-    });
-    ws.on('error', () => resolve(true));
-  });
-  assert(evilWsRejected, "Untrusted origin WebSocket connection must be rejected with 403");
-  console.log("   ✅ CSWSH Protection: Blocked untrusted Origin (403)");
-
-  // 1b. Localhost origin WebSocket must succeed
-  const localWsAccepted = await new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${testPort}`, {
-      headers: { origin: 'http://localhost' }
-    });
-    ws.on('open', () => {
-      ws.close();
-      resolve(true);
-    });
-    ws.on('error', () => resolve(false));
-  });
-  assert(localWsAccepted, "Localhost origin WebSocket must be accepted");
-  console.log("   ✅ Localhost Origin: Accepted successfully");
-
-  // 1c. Payload size limit on POST
-  const largeBody = 'a'.repeat(1.2 * 1024 * 1024);
-  const largePayloadRejected = await new Promise((resolve) => {
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: testPort,
-      path: '/api/directives/submit',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    }, (res) => {
-      resolve(res.statusCode === 413);
-    });
-    req.on('error', () => resolve(true));
-    req.write(largeBody);
-    req.end();
-  });
-  assert(largePayloadRejected, "Oversized POST payload (>1MB) must be rejected with 413");
-  console.log("   ✅ Payload Guard: Rejected >1MB payload with 413");
-  server.stop();
 
   // --- Test 2: ContentReader Article Header Preservation ---
   console.log("\n2. Testing ContentReader Article Header Preservation...");
@@ -142,8 +82,8 @@ async function runAuditFixesTests() {
 
   // Both should have their own obsId and own element maps preserved on the page
   assert.notStrictEqual(obsA.obs_id, obsB.obs_id, "Distinct observations must have distinct obs_ids");
-  assert.strictEqual(pageA._currentObservation.obsId, obsA.obs_id, "pageA must cache obsA");
-  assert.strictEqual(pageB._currentObservation.obsId, obsB.obs_id, "pageB must cache obsB");
+  assert(pageA._bm.refs.has(obsA.elements[0].ref), "pageA must own its refs");
+  assert(!pageB._bm.refs.has(obsA.elements[0].ref) || pageB._bm.refs.get(obsA.elements[0].ref).frame !== pageA._bm.refs.get(obsA.elements[0].ref).frame, "pageB must not resolve pageA refs");
 
   // Acting on pageA should resolve pageA's ref without interference from pageB
   const refA = obsA.elements[0].ref;

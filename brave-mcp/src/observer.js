@@ -1,569 +1,285 @@
+import { pageAgent } from './page-agent.js';
+
+export class StaleRefError extends Error {}
+
+const FRAME_TIMEOUT = 3000;
+
+function withTimeout(promise, ms, fallback) {
+  let t;
+  return Promise.race([promise, new Promise(r => { t = setTimeout(() => r(fallback), ms); })]).finally(() => clearTimeout(t));
+}
+
+/** Per-page ref registry: maps stable page-level refs (e12) to {frame, lid, doc}. */
+export function pageState(page) {
+  if (!page._bm) page._bm = {};
+  const bm = page._bm;
+  if (!bm.refs) {
+    bm.next = 1;
+    bm.refs = new Map();     // ref -> { frame, lid, doc, sig }
+    bm.byKey = new Map();    // frameKey:doc:lid -> ref
+    bm.seen = new Map();     // ref -> signature string the model has seen
+    bm.frameIds = new WeakMap();
+    bm.frameSeq = 0;
+    bm.mainDoc = null;
+  }
+  return bm;
+}
+
+function frameKey(bm, frame) {
+  let k = bm.frameIds.get(frame);
+  if (!k) { k = ++bm.frameSeq; bm.frameIds.set(frame, k); }
+  return k;
+}
+
+function shortUrl(u) {
+  try {
+    const x = new URL(u);
+    if (x.protocol === 'about:' || x.protocol === 'data:') return u.slice(0, 40);
+    const s = x.host + x.pathname.replace(/\/$/, '') + (x.search.length > 1 ? x.search.slice(0, 30) + (x.search.length > 30 ? '…' : '') : '');
+    return s.length > 80 ? s.slice(0, 79) + '…' : s;
+  } catch (_) {
+    return String(u).slice(0, 80);
+  }
+}
+
+function line(e) {
+  let s = `${e.ref} ${e.role}${e.sub ? ':' + e.sub : ''}`;
+  if (e.name) s += ` "${e.name}"`;
+  if (e.value !== undefined && e.value !== '') s += ` ="${e.value}"`;
+  if (e.flags) s += ` [${e.flags.join(',')}]`;
+  return s;
+}
+
+const sigOf = (e) => `${e.role}|${e.name}|${e.value ?? ''}|${(e.flags || []).join(',')}`;
+
 export class BrowserObserver {
-  constructor() {
-    this.currentObservation = null;
-  }
-
   /**
-   * Generates a lightweight fingerprint of the page's interactive state.
-   */
-  async getDomFingerprint(page) {
-    try {
-      return await page.evaluate(() => {
-        const interactive = document.querySelectorAll('button, a[href], input, select, textarea, [role="button"]');
-        let hash = `${interactive.length}:`;
-        for (let i = 0; i < Math.min(25, interactive.length); i++) {
-          const el = interactive[i];
-          hash += `${el.tagName}:${(el.innerText || el.getAttribute('aria-label') || el.value || '').slice(0, 15)}|`;
-        }
-        return hash;
-      });
-    } catch (e) {
-      return `fp_${Date.now()}`;
-    }
-  }
-
-  /**
-   * Formats elements into a compact, token-dense text representation with
-   * hybrid spatial partitioning (viewport items in full detail, offscreen ledger)
-   * and prominent page alert reporting.
-   */
-  formatCompact(elements, meta = {}) {
-    if (!elements || elements.length === 0) return "(No interactive elements detected)";
-
-    const visible = [];
-    const offscreenBelow = [];
-    const offscreenAbove = [];
-
-    for (const e of elements) {
-      if (e.inViewport === false) {
-        if (e.domMeta && e.domMeta.top < 0) {
-          offscreenAbove.push(e);
-        } else {
-          offscreenBelow.push(e);
-        }
-      } else {
-        visible.push(e);
-      }
-    }
-
-    const lines = [];
-
-    if (meta.title || meta.url) {
-      lines.push(`# PAGE: ${meta.title || 'Untitled'} | y:${meta.scrollY || 0}/${meta.docHeight || 0} [${meta.obsId || ''}]`);
-      if (meta.url) lines.push(`URL: ${meta.url}`);
-    }
-
-    if (meta.alerts && meta.alerts.length > 0) {
-      for (const alert of meta.alerts) {
-        lines.push(`⚠️ PAGE ALERT: "${alert}"`);
-      }
-    }
-
-    if (meta.directives && meta.directives.length > 0) {
-      for (const d of meta.directives) {
-        lines.push(`📩 HUD DIRECTIVE: "${d.prompt || d}"`);
-      }
-    }
-
-    if (lines.length > 0) lines.push('');
-
-    // 1. Visible elements rendered in full detail
-    if (visible.length > 0) {
-      lines.push(`VISIBLE (${visible.length} items):`);
-      for (const e of visible) {
-        let line = `[${e.ref}] <${e.role || 'element'}>`;
-        if (e.name) line += ` "${e.name}"`;
-        if (e.value) line += ` value="${e.value}"`;
-        if (e.checked) line += ` [checked]`;
-        if (e.disabled) line += ` [disabled]`;
-        if (e.domMeta?.id) line += ` #${e.domMeta.id}`;
-        if (e.frameIndex !== null && e.frameIndex !== undefined) line += ` (iframe ${e.frameIndex})`;
-        lines.push(line);
-      }
-    } else {
-      lines.push(`VISIBLE: (No interactive elements in current viewport)`);
-    }
-
-    // 2. Offscreen Landmark Ledger: dense summary with valid refs (pruned if visibleOnly)
-    const hasOffscreen = !meta.visibleOnly && (offscreenAbove.length > 0 || offscreenBelow.length > 0);
-    if (hasOffscreen) {
-      lines.push('');
-      lines.push(`OFFSCREEN (direct action auto-scrolls):`);
-      if (offscreenAbove.length > 0) {
-        const items = offscreenAbove.map(e => `${e.ref} (<${e.role || 'element'}> "${e.name || e.domMeta?.id || ''}")`).slice(0, 8);
-        lines.push(`[Above]: ${items.join(', ')}${offscreenAbove.length > 8 ? ` ... (+${offscreenAbove.length - 8} more)` : ''}`);
-      }
-      if (offscreenBelow.length > 0) {
-        const items = offscreenBelow.map(e => `${e.ref} (<${e.role || 'element'}> "${e.name || e.domMeta?.id || ''}")`).slice(0, 12);
-        lines.push(`[Below]: ${items.join(', ')}${offscreenBelow.length > 12 ? ` ... (+${offscreenBelow.length - 12} more)` : ''}`);
-      }
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Parses Playwright locator.ariaSnapshot() YAML text into structured accessible nodes.
-   */
-  _parseAriaSnapshot(yamlString, interactiveRoles) {
-    if (!yamlString) return [];
-    const lines = yamlString.split('\n');
-    const elements = [];
-
-    for (const rawLine of lines) {
-      const trimmed = rawLine.trim();
-      if (!trimmed.startsWith('-')) continue;
-
-      const match = trimmed.match(/^-\s*([a-zA-Z0-9_-]+)(?::\s*|\s+)?(?:"((?:\\.|[^"\\])*)")?(.*)$/);
-      if (!match) continue;
-
-      const role = match[1].toLowerCase();
-      const name = match[2] ? match[2].replace(/\\"/g, '"').trim() : undefined;
-      const flags = match[3] || '';
-
-      if (role === 'document' || role === 'heading' || role === 'paragraph' || role === 'text' || role === 'group') {
-        continue;
-      }
-
-      if (interactiveRoles && !interactiveRoles.has(role)) {
-        continue;
-      }
-
-      // Filter out unlabelled non-input elements (e.g. empty links or icon wrappers) to minimize token usage
-      const isInputRole = ['textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'slider', 'spinbutton'].includes(role);
-      if (!name && !isInputRole) {
-        continue;
-      }
-
-      const checked = flags.includes('[checked]') ? true : undefined;
-      const disabled = flags.includes('[disabled]') ? true : undefined;
-      const selected = flags.includes('[selected]') ? true : undefined;
-
-      elements.push({
-        role,
-        name,
-        checked,
-        disabled,
-        selected
-      });
-    }
-    return elements;
-  }
-
-  /**
-   * Performs tri-source observation: DOM + ARIA + Screenshot.
-   * Discovers elements across main frame and accessible iframes.
-   * Generates ephemeral element references (e1, e2, ...).
-   * Supports token-efficient compact formatting and scoped selector targeting.
+   * Observes a page across all frames in parallel (one evaluate per frame).
+   * Refs are stable for an element's lifetime, so deltas can be computed.
    */
   async observe(page, options = {}) {
     const {
       includeScreenshot = false,
       screenshotScope = null,
+      labels = false,
       clip = null,
-      maxElements = 60,
-      format = 'compact',
+      maxElements = 50,
       scope = null,
-      filter = 'interactive',
+      filter = null,
       visibleOnly = false,
-      directives = []
+      delta = false,
+      tabId = null
     } = options;
 
-    const obsId = `obs_${Date.now()}`;
-    const url = page.url();
-    const title = await page.title().catch(() => 'Unknown');
+    const bm = pageState(page);
+    const mainFrame = page.mainFrame();
+    const frames = page.frames().filter(f => !f.isDetached());
 
-    // 1. DOM state & scroll dimensions
-    const domState = await page.evaluate(() => {
-      return {
-        scrollX: window.scrollX,
-        scrollY: window.scrollY,
-        innerWidth: window.innerWidth,
-        innerHeight: window.innerHeight,
-        documentHeight: document.documentElement.scrollHeight,
-        readyState: document.readyState
+    // Which already-seen refs belong to which frame (to detect removals).
+    const seenByFrame = new Map();
+    for (const ref of bm.seen.keys()) {
+      const r = bm.refs.get(ref);
+      if (!r) continue;
+      if (!seenByFrame.has(r.frame)) seenByFrame.set(r.frame, []);
+      seenByFrame.get(r.frame).push(r.lid);
+    }
+
+    const results = await Promise.all(frames.map((frame) => {
+      const isMain = frame === mainFrame;
+      const req = {
+        op: 'observe',
+        scope: isMain ? scope : null,
+        filter: filter === 'all' || filter === 'interactive' ? null : (filter === 'buttons_links' ? 'clickable' : filter),
+        max: isMain ? maxElements : Math.min(20, maxElements),
+        visibleOnly,
+        seen: seenByFrame.get(frame) || []
       };
-    }).catch(() => ({
-      scrollX: 0,
-      scrollY: 0,
-      innerWidth: 1280,
-      innerHeight: 800,
-      documentHeight: 800,
-      readyState: 'complete'
+      const run = frame.evaluate(pageAgent, req).catch(err => ({ error: err.message }));
+      return withTimeout(run, FRAME_TIMEOUT, { error: 'frame timed out' });
     }));
 
-    const domFingerprint = await this.getDomFingerprint(page);
+    const main = results[frames.indexOf(mainFrame)];
+    if (!main || main.error) {
+      if (main?.error && /scope/.test(main.error)) throw new Error(main.error);
+      throw new Error(`Could not read page (${main?.error || 'no main frame'}). The tab may be frozen, discarded, or blocked by a dialog.`);
+    }
 
-    // 1b. Live-Region & Page Alert Sentinel (captures form errors, banners, toast messages)
-    const alerts = await page.evaluate(() => {
-      const alertNodes = document.querySelectorAll(
-        '[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"], ' +
-        '.error-message, .alert, .toast, .notice-error, .invalid-feedback, [aria-invalid="true"]'
-      );
-      const messages = [];
-      for (const el of alertNodes) {
-        const text = (el.innerText || el.textContent || '').trim();
-        const rect = el.getBoundingClientRect();
-        if (text && (rect.width > 0 || rect.height > 0)) {
-          messages.push(text.slice(0, 150));
-        }
-      }
-      return Array.from(new Set(messages)).slice(0, 3);
-    }).catch(() => []);
+    // Navigation (new main document) resets what the model has seen; refs keep counting up so old refs can't alias.
+    const navigated = bm.mainDoc !== null && bm.mainDoc !== main.doc;
+    if (navigated || bm.mainDoc === null) {
+      bm.seen.clear();
+      for (const [ref, r] of bm.refs) if (r.frame === mainFrame) bm.refs.delete(ref);
+    }
+    bm.mainDoc = main.doc;
 
     const elements = [];
-    const elementMap = new Map();
-    let refCounter = 1;
-
-    let interactiveRoles = new Set([
-      'button', 'link', 'textbox', 'searchbox', 'combobox',
-      'checkbox', 'radio', 'switch', 'menuitem', 'tab',
-      'option', 'slider', 'spinbutton'
-    ]);
-
-    if (filter === 'inputs') {
-      interactiveRoles = new Set(['textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'slider', 'spinbutton']);
-    } else if (filter === 'buttons_links') {
-      interactiveRoles = new Set(['button', 'link', 'menuitem', 'tab', 'switch']);
-    }
-
-    // 2. ARIA tree snapshot via modern Playwright locator.ariaSnapshot()
-    let ariaYaml = null;
-    try {
-      const locator = scope ? page.locator(scope) : page.locator(':root');
-      ariaYaml = await locator.ariaSnapshot({ timeout: 3000 });
-    } catch (e) {
-      ariaYaml = null;
-    }
-
-    if (ariaYaml) {
-      const parsedAria = this._parseAriaSnapshot(ariaYaml, interactiveRoles);
-      for (const item of parsedAria) {
-        if (elements.length >= maxElements) break;
-        const ref = `e${refCounter++}`;
-        const refItem = {
+    const gone = [];
+    frames.forEach((frame, i) => {
+      const res = results[i];
+      if (!res || res.error || !res.items) return;
+      const fk = frameKey(bm, frame);
+      for (const lid of res.gone || []) {
+        const ref = bm.byKey.get(`${fk}:${res.doc}:${lid}`);
+        if (ref) gone.push(ref);
+      }
+      for (const it of res.items) {
+        const key = `${fk}:${res.doc}:${it.lid}`;
+        let ref = bm.byKey.get(key);
+        if (!ref) {
+          ref = `e${bm.next++}`;
+          bm.byKey.set(key, ref);
+        }
+        bm.refs.set(ref, { frame, lid: it.lid, doc: res.doc, sig: { role: it.role, name: it.name } });
+        elements.push({
           ref,
-          role: item.role,
-          name: item.name || undefined,
-          value: item.value || undefined,
-          checked: item.checked,
-          disabled: item.disabled,
-          frameIndex: null
-        };
-        elements.push(refItem);
-        elementMap.set(ref, refItem);
+          role: it.role,
+          name: it.name || undefined,
+          value: it.value,
+          sub: it.sub,
+          flags: it.flags,
+          checked: it.flags?.includes('checked') || undefined,
+          disabled: it.flags?.includes('disabled') || undefined,
+          inViewport: it.pos === 0,
+          pos: it.pos,
+          frameIndex: frame === mainFrame ? null : i,
+          domMeta: { id: it.id, type: it.type, tag: it.tag, centerX: it.x, centerY: it.y }
+        });
       }
-    }
-
-    // 3. Supplementary DOM query (provides precise IDs, input values, iframe elements)
-    const frames = page.frames();
-    for (let fIdx = 0; fIdx < frames.length; fIdx++) {
-      if (elements.length >= maxElements) break;
-      const frame = frames[fIdx];
-      const isMain = fIdx === 0;
-
-      try {
-        const domElements = await frame.evaluate(({ max, scopeSelector, filterMode }) => {
-          let root = document;
-          if (scopeSelector) {
-            try {
-              root = document.querySelector(scopeSelector);
-              if (!root) return []; // Frame does not contain scopeSelector
-            } catch (e) {
-              return [];
-            }
-          }
-
-          let query = 'button, a[href], input, textarea, select, [role="button"], [role="link"], [role="checkbox"], [role="menuitem"], [role="tab"], [role="combobox"], [contenteditable="true"], [tabindex="0"]';
-          if (filterMode === 'inputs') {
-            query = 'input, textarea, select, [role="textbox"], [role="combobox"], [role="checkbox"]';
-          } else if (filterMode === 'buttons_links') {
-            query = 'button, a[href], [role="button"], [role="link"]';
-          }
-
-          function queryDeep(container) {
-            let matches = Array.from(container.querySelectorAll(query));
-            try {
-              const allElements = container.querySelectorAll('*');
-              for (const el of allElements) {
-                if (el.shadowRoot) {
-                  matches = matches.concat(queryDeep(el.shadowRoot));
-                }
-              }
-            } catch (_) {}
-            return matches;
-          }
-
-          function getUniquePath(el) {
-            if (el.id) {
-              return `[id="${CSS.escape(el.id)}"]`;
-            }
-            const parts = [];
-            let cur = el;
-            while (cur && cur.nodeType === Node.ELEMENT_NODE && cur.tagName.toLowerCase() !== 'html') {
-              let name = cur.tagName.toLowerCase();
-              if (cur.id) {
-                parts.unshift(`[id="${CSS.escape(cur.id)}"]`);
-                break;
-              }
-              let parent = cur.parentElement;
-              if (parent) {
-                const siblings = Array.from(parent.children).filter(c => c.tagName.toLowerCase() === name);
-                if (siblings.length > 1) {
-                  const index = siblings.indexOf(cur) + 1;
-                  name += `:nth-of-type(${index})`;
-                }
-              }
-              parts.unshift(name);
-              cur = parent;
-            }
-            return parts.join(' > ');
-          }
-
-          const items = [];
-          const els = queryDeep(root);
-          const vWidth = window.innerWidth || 1280;
-          const vHeight = window.innerHeight || 800;
-
-          for (const el of els) {
-            const rect = el.getBoundingClientRect();
-            const tag = el.tagName.toLowerCase();
-            const isFileInput = tag === 'input' && el.type === 'file';
-            const style = window.getComputedStyle(el);
-
-            // Strict interactive visibility pruning: skip invisible, hidden or 0-opacity elements
-            if (!isFileInput) {
-              if (rect.width <= 0 || rect.height <= 0) continue;
-              if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') continue;
-            }
-
-            const rawText = el.getAttribute('aria-label') || el.innerText || el.getAttribute('placeholder') || el.getAttribute('value') || '';
-            const text = rawText.replace(/\s+/g, ' ').trim();
-            const isFormInput = ['input', 'textarea', 'select'].includes(tag);
-            // Drop completely empty, unlabelled non-input nodes to save tokens
-            if (!text && !el.id && !el.name && !isFormInput && !isFileInput) {
-              continue;
-            }
-
-            const inViewport = (rect.top >= 0 && rect.top <= vHeight && rect.left >= 0 && rect.left <= vWidth);
-            const cx = Math.round(rect.left + rect.width / 2);
-            const cy = Math.round(rect.top + rect.height / 2);
-
-            items.push({
-              _el: el,
-              tag,
-              role: el.getAttribute('role') || el.tagName.toLowerCase(),
-              name: text.slice(0, 100),
-              type: el.getAttribute('type') || undefined,
-              value: (el.value || '').slice(0, 100),
-              disabled: el.disabled || undefined,
-              id: el.id || undefined,
-              nameAttr: el.name || undefined,
-              centerX: cx,
-              centerY: cy,
-              inViewport,
-              top: Math.round(rect.top),
-              left: Math.round(rect.left),
-              width: Math.round(rect.width),
-              height: Math.round(rect.height)
-            });
-          }
-
-          // Viewport-Priority Sorting: visible items first, then top-to-bottom
-          items.sort((a, b) => {
-            if (a.inViewport && !b.inViewport) return -1;
-            if (!a.inViewport && b.inViewport) return 1;
-            return a.top - b.top;
-          });
-
-          const sliced = items.slice(0, max);
-          for (const item of sliced) {
-            item.uniqueSelector = getUniquePath(item._el);
-            delete item._el;
-          }
-          return sliced;
-        }, { max: maxElements - elements.length, scopeSelector: scope, filterMode: filter });
-
-        for (const d of domElements) {
-          // If already discovered by ARIA in the main frame, augment with DOM metadata (ensure 1-to-1 match)
-          const existing = isMain ? elements.find(e => 
-            e.frameIndex === null &&
-            !e.domMeta &&
-            ((e.name && d.name && e.name.toLowerCase() === d.name.toLowerCase()) ||
-             (e.role === 'textbox' && (d.tag === 'input' || d.tag === 'textarea') && (!e.name || e.name === d.name)))
-          ) : null;
-
-          if (existing) {
-            existing.domMeta = d;
-            existing.inViewport = d.inViewport;
-            if (d.value && !existing.value) existing.value = d.value;
-            const mapItem = elementMap.get(existing.ref);
-            if (mapItem) {
-              mapItem.domMeta = d;
-              mapItem.inViewport = d.inViewport;
-            }
-          } else {
-            if (elements.length >= maxElements) break;
-            const ref = `e${refCounter++}`;
-            const item = {
-              ref,
-              role: d.role,
-              name: d.name || undefined,
-              value: d.value || undefined,
-              disabled: d.disabled,
-              domMeta: d,
-              inViewport: d.inViewport,
-              frameIndex: isMain ? null : fIdx
-            };
-            elements.push(item);
-            elementMap.set(ref, item);
-          }
-        }
-      } catch (err) {
-        // Frame may be restricted or cross-origin sandbox
-      }
-    }
-
-    // 4. Viewport or scoped region screenshot (saves 85%+ vision tokens when scoped)
-    let screenshotBase64 = null;
-    let screenshotScopeInfo = 'viewport';
-    if (includeScreenshot) {
-      try {
-        let buffer = null;
-        if (screenshotScope) {
-          const loc = page.locator(screenshotScope).first();
-          buffer = await loc.screenshot({ type: 'jpeg', quality: 75, timeout: 5000 });
-          screenshotScopeInfo = `element:${screenshotScope}`;
-        } else if (clip) {
-          let clipRect = null;
-          if (Array.isArray(clip) && clip.length >= 4) {
-            clipRect = { x: clip[0], y: clip[1], width: clip[2], height: clip[3] };
-          } else if (clip && typeof clip === 'object' && clip.x !== undefined && clip.y !== undefined) {
-            clipRect = {
-              x: Math.round(clip.x),
-              y: Math.round(clip.y),
-              width: Math.round(clip.width || clip.w || 200),
-              height: Math.round(clip.height || clip.h || 200)
-            };
-          }
-          if (clipRect) {
-            buffer = await page.screenshot({ clip: clipRect, type: 'jpeg', quality: 75, timeout: 5000 });
-            screenshotScopeInfo = `clip:[${clipRect.x},${clipRect.y},${clipRect.width}x${clipRect.height}]`;
-          }
-        }
-
-        if (!buffer) {
-          buffer = await page.screenshot({
-            type: 'jpeg',
-            quality: 75,
-            timeout: 5000
-          });
-        }
-        screenshotBase64 = buffer.toString('base64');
-      } catch (err) {
-        screenshotBase64 = null;
-      }
-    }
-
-    // Cache the observation internally (full structured maps preserved)
-    const observationRecord = {
-      obsId,
-      url,
-      title,
-      timestamp: Date.now(),
-      domState,
-      domFingerprint,
-      alerts,
-      elements,
-      elementMap,
-      screenshot: screenshotBase64,
-      screenshotScope: screenshotScopeInfo
-    };
-
-    this.currentObservation = observationRecord;
-    if (page) {
-      page._currentObservation = observationRecord;
-    }
-
-    const compactOutput = this.formatCompact(elements, {
-      title,
-      url,
-      alerts,
-      directives,
-      scrollY: domState.scrollY,
-      docHeight: domState.documentHeight,
-      obsId,
-      visibleOnly
     });
 
+    // ---- delta vs what the model has already seen ----
+    const added = [], changed = [];
+    for (const e of elements) {
+      const prev = bm.seen.get(e.ref);
+      if (prev === undefined) added.push(e);
+      else if (prev !== sigOf(e)) changed.push(e);
+    }
+    const goneRefs = gone.filter(r => bm.seen.has(r));
+    const tooBig = elements.length > 10 && added.length + changed.length > elements.length * 0.6;
+    const useDelta = delta && !navigated && bm.seen.size > 0 && !tooBig;
+
+    if (useDelta) {
+      for (const e of [...added, ...changed]) bm.seen.set(e.ref, sigOf(e));
+      for (const r of goneRefs) bm.seen.delete(r);
+    } else {
+      bm.seen.clear();
+      for (const e of elements) bm.seen.set(e.ref, sigOf(e));
+    }
+
+    const header = `# ${main.title || 'Untitled'} | ${shortUrl(main.url)}${tabId ? ' | ' + tabId : ''} | y${main.y}/${main.h}${main.modal ? ` | modal "${main.modal}"` : ''}`;
+    // In delta mode the header is only repeated when it changed.
+    const out = useDelta && bm.lastHeader === header ? [] : [header];
+    bm.lastHeader = header;
+    for (const a of main.alerts || []) {
+      if (useDelta && bm.lastAlerts?.includes(a)) continue;
+      out.push(`! ${a}`);
+    }
+    bm.lastAlerts = main.alerts || [];
+
+    if (useDelta) {
+      for (const e of added) out.push('+ ' + line(e));
+      for (const e of changed) out.push('~ ' + line(e));
+      if (goneRefs.length) out.push('- ' + goneRefs.join(' '));
+      if (!added.length && !changed.length && !goneRefs.length) out.push('(no element changes)');
+    } else {
+      const inView = elements.filter(e => e.pos === 0);
+      const below = elements.filter(e => e.pos === 1);
+      const above = elements.filter(e => e.pos === -1);
+      if (!elements.length) out.push('(no interactive elements)');
+      for (const e of inView) out.push(line(e));
+      if (above.length) { out.push('above:'); for (const e of above) out.push(line(e)); }
+      if (below.length) { out.push('below:'); for (const e of below) out.push(line(e)); }
+      const m = main.more || {};
+      const extra = (m.inView || 0) + (m.below || 0) + (m.above || 0);
+      if (extra) out.push(`(+${extra} more not listed; scroll, raise max, or use scope)`);
+    }
+
+    // ---- screenshot ----
+    let screenshot = null;
+    if (includeScreenshot || screenshotScope || clip) {
+      screenshot = await this._screenshot(page, { screenshotScope, clip, labels, elements, bm });
+    }
+
+    const obsId = `obs_${Date.now()}`;
+    bm.obsId = obsId;
     return {
       obs_id: obsId,
-      tab: {
-        title,
-        url
-      },
-      page: {
-        loading: domState.readyState !== 'complete',
-        scroll: {
-          x: domState.scrollX,
-          y: domState.scrollY,
-          documentHeight: domState.documentHeight
-        },
-        viewport: {
-          width: domState.innerWidth,
-          height: domState.innerHeight
-        }
-      },
-      alerts,
-      directives,
-      format,
+      navigated,
+      delta: useDelta,
+      tab: { title: main.title, url: main.url },
+      page: { scroll: { y: main.y, documentHeight: main.h }, viewportHeight: main.vh, modal: main.modal },
+      alerts: main.alerts || [],
       element_count: elements.length,
-      elements_compact: compactOutput,
-      elements: elements,
-      screenshot: screenshotBase64 ? `data:image/jpeg;base64,${screenshotBase64}` : null,
-      screenshot_scope: screenshotBase64 ? screenshotScopeInfo : undefined
+      elements,
+      elements_compact: out.join('\n'),
+      screenshot
     };
   }
 
-
-
-  /**
-   * Resolves an ephemeral reference (e.g. "e2") against the current observation.
-   * Validates obs_id if provided. Supports per-page observation resolution for cross-tab isolation.
-   */
-  resolveRef(ref, expectedObsId = null, page = null) {
-    const obs = (page && page._currentObservation) ? page._currentObservation : this.currentObservation;
-    if (!obs) {
-      throw new Error("No active observation found. Call brave_observe first.");
+  async _screenshot(page, { screenshotScope, clip, labels, elements, bm }) {
+    const opts = { type: 'jpeg', quality: 60, scale: 'css', timeout: 5000 };
+    let labeled = false;
+    try {
+      if (labels) {
+        const items = elements.filter(e => e.frameIndex === null && e.pos === 0).map(e => ({ lid: bm.refs.get(e.ref).lid, ref: e.ref }));
+        labeled = await page.evaluate(pageAgent, { op: 'labels', items }).catch(() => false);
+      }
+      let buf;
+      if (screenshotScope) {
+        buf = await page.locator(screenshotScope).first().screenshot(opts);
+      } else if (clip) {
+        const c = Array.isArray(clip) ? { x: clip[0], y: clip[1], width: clip[2], height: clip[3] } : clip;
+        buf = await page.screenshot({ ...opts, clip: { x: Math.round(c.x), y: Math.round(c.y), width: Math.round(c.width || c.w || 200), height: Math.round(c.height || c.h || 200) } });
+      } else {
+        buf = await page.screenshot(opts);
+      }
+      return `data:image/jpeg;base64,${buf.toString('base64')}`;
+    } catch (_) {
+      return null;
+    } finally {
+      if (labeled) await page.evaluate(pageAgent, { op: 'unlabels' }).catch(() => {});
     }
-
-    if (expectedObsId && obs.obsId !== expectedObsId) {
-      throw new Error(
-        `Stale observation error: Action was submitted with obs_id '${expectedObsId}', ` +
-        `but active observation is '${obs.obsId}'. ` +
-        `The page has updated. Call brave_observe to inspect the new page state.`
-      );
-    }
-
-    const item = obs.elementMap.get(ref);
-    if (!item) {
-      const validRefs = Array.from(obs.elementMap.keys()).join(', ');
-      throw new Error(
-        `Element reference '${ref}' not found in observation '${obs.obsId}'.\n` +
-        `Available refs: [${validRefs}].\n` +
-        `If the page changed, call brave_observe to get a fresh observation.`
-      );
-    }
-    return item;
   }
 
-  /**
-   * Invalidate current observation (e.g. after navigation or mutation).
-   */
-  invalidate(page = null) {
-    if (page && page._currentObservation) {
-      page._currentObservation = null;
+  /** Registers an element found by text/role/css and returns its ref. */
+  async find(page, query) {
+    const bm = pageState(page);
+    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame() && !f.isDetached())];
+    for (const frame of frames) {
+      const res = await withTimeout(frame.evaluate(pageAgent, { op: 'find', ...query }).catch(() => null), FRAME_TIMEOUT, null);
+      if (res?.error) throw new Error(res.error);
+      if (!res) continue;
+      const doc = await frame.evaluate(pageAgent, { op: 'ping' });
+      const fk = frameKey(bm, frame);
+      const key = `${fk}:${doc}:${res.lid}`;
+      let ref = bm.byKey.get(key);
+      if (!ref) { ref = `e${bm.next++}`; bm.byKey.set(key, ref); }
+      bm.refs.set(ref, { frame, lid: res.lid, doc, sig: { role: res.role, name: res.name } });
+      return { ref, role: res.role, name: res.name };
     }
-    this.currentObservation = null;
+    return null;
+  }
+
+  /** Resolves a ref to a live ElementHandle, self-healing re-rendered nodes. */
+  async handle(page, ref) {
+    const bm = pageState(page);
+    const r = bm.refs.get(ref);
+    if (!r) {
+      throw new StaleRefError(bm.next > 1
+        ? `Ref '${ref}' is not on this page (it may be from before a navigation).`
+        : `No refs yet. Call brave_observe first or target by text, e.g. ref:"Sign in".`);
+    }
+    if (r.frame.isDetached()) throw new StaleRefError(`Ref '${ref}' was inside a frame that is gone.`);
+    const h = await r.frame.evaluateHandle(pageAgent, { op: 'get', lid: r.lid, doc: r.doc, sig: r.sig });
+    const el = h.asElement();
+    if (!el) {
+      await h.dispose().catch(() => {});
+      throw new StaleRefError(`Ref '${ref}' ("${r.sig.name || r.sig.role}") no longer exists.`);
+    }
+    return { el, frame: r.frame, info: r.sig };
+  }
+
+  invalidate(page = null) {
+    if (page?._bm?.seen) page._bm.seen.clear();
   }
 }

@@ -19,7 +19,7 @@ This workspace is the dedicated developer repository for **Evidence-Grounded Bra
 ```text
 Browser-remastered/
 ├── brave-mcp/                     # MCP Server & CDP Bridge Engine
-│   ├── src/                       # Core engine: browser.js, observer.js, actions.js, verifier.js, workflow.js, reader.js, index.js
+│   ├── src/                       # Core engine: index.js, browser.js, page-agent.js, page-hooks.js, observer.js, actions.js, verifier.js, reader.js, workflow.js
 │   ├── scripts/                   # Modular automation scripts (cdp, workflows)
 │   ├── test/                      # Comprehensive test batteries
 │   └── run-mcp.cmd                # Launcher script called by global mcp_config.json
@@ -53,7 +53,7 @@ This tool is **not** site-specific. It is a universal browser engine that accomm
 To achieve **minimum code with maximum efficiency and minimum token usage**, follow this strict execution hierarchy:
 
 1. **Tier 1 (Single Action / Read)**: Use atomic MCP tools (`brave_read`, `brave_eval`, `brave_act`). **Never generate a script for 1-step tasks.**
-2. **Tier 2 (Sequential Workflow, 3–10 steps)**: Use `brave_batch_act` to execute the sequence in **1 single turn** without multi-turn LLM loops. **Do not generate a script.**
+2. **Tier 2 (Sequential Workflow, 2–10 steps)**: Use one `brave_act` call with `steps` (goto, type, click, wait, eval...) to run the sequence in **1 single turn**. Target by label (`"Sign in"`, `"button:Save"`) when it's known, so no observe call is needed. **Do not generate a script.**
 3. **Tier 3 (Repetitive Loops / Bulk / Multi-Page Pagination)**: Use `brave_workflow` (`paginate_extract` / `bulk_action`). Loops natively inside CDP at **0 tokens per page**.
 4. **Tier 4 (Recurring Task Across Sessions / Custom Pipelines)**: Only synthesize a dedicated script in `brave-mcp/scripts/workflows/<name>.js` when an operation is executed repeatedly over time.
 
@@ -73,20 +73,24 @@ All scripts must be placed in their appropriate subdirectory under `brave-mcp/sc
 
 ---
 
-## 🛠️ The 8 Core MCP Tools (`brave-control`)
-
-Antigravity controls Brave via the following 8 MCP tools registered in `mcp_config.json`:
+## 🛠️ The 6 MCP Tools (`brave-control`)
 
 | Tool | Primary Purpose | Key Parameters |
 | :--- | :--- | :--- |
-| `brave_tabs` | Manage, inspect, and filter open tabs | `action` (`list`, `switch`, `new`, `close`, `focus`), `index` (number or title/URL substring), `query`, `url`, `and_observe` |
-| `brave_observe` | Extract hybrid spatial DOM/ARIA state with minimal token footprint | `target`, `tabIndex`, `scope`, `filter`, `format` (`compact`/`json`), `includeScreenshot` |
-| `brave_read` | Dedicated zero-DOM article and table extraction as clean Markdown | `target`, `tabIndex`, `scope`, `maxLength` (saves ~90% tokens on reading tasks) |
-| `brave_act` | Perform browser actions with automatic compound observation | `action`, `ref` (ephemeral ID e.g. `e1`), `text`, `clear`, `and_observe` (default `true`) |
-| `brave_batch_act` | Execute multiple actions sequentially without LLM loops | `actions` (array of action objects), `and_observe` (default `true`), `tabIndex` |
-| `brave_workflow` | High-speed pagination, bulk actions, and compiled workflow routines | `action` (`paginate_extract`, `bulk_action`, `run_script`), `itemSelector`, `nextSelector`, `fields` |
-| `brave_eval` | Execute direct in-page JavaScript for instant zero-token scraping | `script` (JS string), `tabIndex`, `frameIndex` |
-| `brave_navigate` | Direct tab navigation with 1-turn compound observation | `url`, `action` (`goto`, `reload`, `back`, `forward`), `and_observe` (default `true`), `tabIndex` |
+| `brave_tabs` | list / switch / new / close / focus tabs (stable ids t1, t2...) | `action`, `tab`, `url` |
+| `brave_observe` | interactive elements as `e12 role "name" ="value" [flags]`, viewport first, auto-scoped to open modals | `scope`, `filter`, `max`, `visible_only`, `screenshot`, `labels`, `crop` |
+| `brave_read` | page as Markdown (paged by `offset`), or the site's own XHR/fetch JSON | `scope`, `offset`, `max`, `network`, `response` |
+| `brave_act` | one action or `steps`; replies with only the changes (+ new, ~ changed, - gone, text:) | `action`, `ref`, `text`, `enter`, `value`, `key`, `files`, `xy`, `url`, `dir`, `steps`, `observe` |
+| `brave_eval` | in-page JavaScript, JSON result (bulk extraction) | `script`, `frame` |
+| `brave_workflow` | zero-turn loops | `paginate_extract`, `bulk_action`, `run_script` |
+
+`brave_batch_act` and `brave_navigate` still work as hidden aliases of `brave_act`.
+
+### Engine rules (keep these when changing `brave-mcp`)
+
+- **Co-browsing safety**: attach with `noDefaults`; never auto-answer dialogs the agent didn't cause; never redirect downloads; never bring a tab to front unless asked; keep the agent on its own (sticky) tab; never pass `--remote-allow-origins=*` (it lets any website control the browser).
+- **Universal**: no site-specific selectors or logic in `src/`. Site-specific routines belong in `scripts/workflows/`.
+- **Tokens and speed**: every tool reply is judged by tokens per step and CDP round trips. Observation runs as one in-page call per frame (`src/page-agent.js`); settle polls from Node (background tabs throttle page timers).
 
 ---
 
@@ -97,11 +101,13 @@ When modifying `brave-mcp`, always run the test battery to verify that protocol 
 ```bash
 cd brave-mcp
 npm test               # Run live CDP diagnostic test against active Brave browser
-npm run test:protocol  # Verify 8-tool MCP JSON-RPC protocol discovery
-npm run test:tokens    # Token reduction (79%+ savings), compact notation & alerts test
+npm run test:protocol  # MCP handshake + 6-tool discovery
+npm run test:tokens    # Compact notation, alerts, scope, reader, act+observe
 npm run test:workflow  # Universal pagination, bulk action & compiled script test
 npm run test:healing   # 5-tier self-healing action engine & overlay auto-dismissal
 npm run test:battery   # 14-point critical guarantee test battery
 npm run test:fixes     # Cross-tab isolation, background tab speed & receipt tracking
-npm run test:all       # Run entire comprehensive test suite
+npm run test:cobrowse  # End-to-end MCP over CDP: dialogs, popups, sticky tab, deltas, network, user guard
+npm run test:all       # Run entire comprehensive test suite (headless, never touches your Brave)
+node test/bench-sites.js  # Real-site universality & speed benchmark
 ```

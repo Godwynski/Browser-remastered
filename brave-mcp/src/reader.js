@@ -13,9 +13,9 @@ export class ContentReader {
    * @param {number} options.maxLength - Maximum character length of extracted markdown (default 6000)
    */
   async extract(page, options = {}) {
-    const { scope = null, maxLength = 6000 } = options;
+    const { scope = null, maxLength = 6000, offset = 0 } = options;
 
-    const result = await page.evaluate(({ scopeSelector, maxChars }) => {
+    const result = await page.evaluate(({ scopeSelector, maxChars, start }) => {
       // 1. Locate the best content container
       let root = null;
       if (scopeSelector) {
@@ -25,11 +25,14 @@ export class ContentReader {
       }
 
       if (!root) {
-        root = document.querySelector('article, main, [role="main"], #content, #main-content, .content, .post, .article-body, .markdown-body');
-      }
-
-      if (!root) {
-        root = document.body;
+        // Pick the content container with the most text; fall back to <body> when "main" is just a stub.
+        const bodyLen = (document.body?.innerText || '').length;
+        let best = null, bestLen = 0;
+        for (const c of document.querySelectorAll('article, main, [role="main"], #content, #main-content, .content, .post, .article-body, .markdown-body')) {
+          const l = (c.innerText || '').length;
+          if (l > bestLen) { best = c; bestLen = l; }
+        }
+        root = best && bestLen > bodyLen * 0.4 ? best : document.body;
       }
 
       if (!root) {
@@ -42,24 +45,14 @@ export class ContentReader {
         };
       }
 
-      // Clone container to avoid mutating actual DOM
-      const clone = root.cloneNode(true);
-
-      // 2. Strip non-content / boilerplate elements
-      const unwantedSelectors = [
-        'script', 'style', 'noscript', 'svg', 'canvas', 'iframe',
-        'nav', 'footer', 'body > header', '[role="banner"]', 'form', '[aria-hidden="true"]',
-        '.advertisement', '.ad', '.ads', '.cookie-banner', '.cookie-consent',
-        '.sidebar', '#sidebar', '.comments', '#comments', '.social-share',
-        '.popup', '.modal', '.banner'
-      ];
-
-      for (const sel of unwantedSelectors) {
-        const els = clone.querySelectorAll(sel);
-        for (const el of els) {
-          el.remove();
-        }
-      }
+      // 2. Boilerplate to skip. Walk the live DOM (not a clone) so shadow DOM and CSS visibility are respected.
+      //    <form> is NOT skipped: many sites (ASP.NET, portals) wrap the whole page in one.
+      const UNWANTED = [
+        'script', 'style', 'noscript', 'template', 'svg', 'canvas', 'iframe', 'select', 'button',
+        'nav', 'footer', 'body > header', '[role="banner"]', '[role="navigation"]', '[aria-hidden="true"]',
+        '.advertisement', '.ads', '.cookie-banner', '.cookie-consent', '#onetrust-consent-sdk',
+        '.sidebar', '#sidebar', '.social-share'
+      ].join(',');
 
       // 3. Convert HTML elements to Markdown
       function htmlToMarkdown(node) {
@@ -71,11 +64,15 @@ export class ContentReader {
         }
 
         if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        if (node !== root && node.matches(UNWANTED)) return '';
+        // display:contents boxes report invisible but their children render.
+        if (node.checkVisibility && !node.checkVisibility({ checkVisibilityCSS: true }) && getComputedStyle(node).display !== 'contents') return '';
 
         const tag = node.tagName.toLowerCase();
 
-        // Process children
-        const childrenMd = Array.from(node.childNodes)
+        // Process children (including open shadow roots and slotted content)
+        const kids = tag === 'slot' ? node.assignedNodes({ flatten: true }) : Array.from((node.shadowRoot || node).childNodes);
+        const childrenMd = kids
           .map(child => htmlToMarkdown(child))
           .join('');
 
@@ -158,7 +155,7 @@ export class ContentReader {
         }
       }
 
-      let markdown = htmlToMarkdown(clone);
+      let markdown = htmlToMarkdown(root);
 
       // Clean excessive newlines & spaces
       markdown = markdown
@@ -169,27 +166,28 @@ export class ContentReader {
       const words = markdown.split(/\s+/).filter(Boolean);
       const wordCount = words.length;
 
-      let truncated = false;
-      if (markdown.length > maxChars) {
-        markdown = markdown.slice(0, maxChars) + `\n\n... [Content truncated at ${maxChars} characters]`;
-        truncated = true;
+      const totalChars = markdown.length;
+      let end = Math.min(totalChars, start + maxChars);
+      // Cut at a line boundary when possible so chunks stay readable.
+      if (end < totalChars) {
+        const cut = markdown.lastIndexOf('\n', end);
+        if (cut > start + maxChars * 0.6) end = cut;
       }
-
-      // Metadata extraction
-      const descEl = document.querySelector('meta[name="description"], meta[property="og:description"]');
-      const authorEl = document.querySelector('meta[name="author"], meta[property="article:author"]');
+      markdown = markdown.slice(start, end);
+      const truncated = end < totalChars;
 
       return {
         title: document.title || 'Untitled',
         url: window.location.href,
-        description: descEl ? descEl.getAttribute('content') : null,
-        author: authorEl ? authorEl.getAttribute('content') : null,
         markdown,
         wordCount,
         readingTimeMin: Math.max(1, Math.ceil(wordCount / 200)),
-        truncated
+        truncated,
+        offset: start,
+        nextOffset: truncated ? end : null,
+        totalChars
       };
-    }, { scopeSelector: scope, maxChars: maxLength });
+    }, { scopeSelector: scope, maxChars: maxLength, start: Math.max(0, offset) });
 
     return result;
   }

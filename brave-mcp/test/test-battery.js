@@ -155,8 +155,8 @@ async function runTestSuite() {
     // -------------------------------------------------------------
     try {
       const protoOutput = execSync('node test/test-mcp-protocol.js', { cwd: path.resolve(__dirname, '..') }).toString();
-      const hasTools = protoOutput.includes('Discovered 8 core tools') || protoOutput.includes('Discovered 7 core tools');
-      recordTest(2, "MCP Tool Protocol Discovery", hasTools, "Discovered all core tools (tabs, observe, read, act, batch_act, eval, navigate, workflow)");
+      const hasTools = protoOutput.includes('Discovered 6 core tools');
+      recordTest(2, "MCP Tool Protocol Discovery", hasTools, "Discovered all core tools (tabs, observe, read, act, eval, workflow)");
     } catch (err) {
       recordTest(2, "MCP Tool Protocol Discovery", false, err.message);
     }
@@ -186,20 +186,20 @@ async function runTestSuite() {
     // -------------------------------------------------------------
     // Test 5: Stale-Reference Rejection (obs_id Mismatch & Mutation)
     // -------------------------------------------------------------
+    // A ref whose element was removed from the page must be rejected, never retargeted.
     let staleRejected = false;
     let staleErrorMsg = "";
+    await page.evaluate(() => { const b = document.createElement('button'); b.id = 'temp-btn'; b.textContent = 'Temporary'; document.body.appendChild(b); });
+    const tmpObs = await observer.observe(page);
+    const tmpRef = tmpObs.elements.find(e => e.name === 'Temporary').ref;
+    await page.evaluate(() => document.getElementById('temp-btn').remove());
     try {
-      // Re-use the previous observation ID obs1.obs_id after page mutation
-      await actionEngine.execute(page, {
-        action: 'click',
-        ref: step1Ref.ref,
-        obs_id: 'obs_outdated_999999'
-      });
+      await actionEngine.execute(page, { action: 'click', ref: tmpRef });
     } catch (err) {
-      staleRejected = true;
+      staleRejected = /no longer exists/.test(err.message);
       staleErrorMsg = err.message;
     }
-    recordTest(5, "Stale-Reference Rejection (obs_id guard)", staleRejected, staleErrorMsg);
+    recordTest(5, "Stale-Reference Rejection (removed element)", staleRejected, staleErrorMsg);
 
     // -------------------------------------------------------------
     // Test 6: Navigation + New Observation Cycle
