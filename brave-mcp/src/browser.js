@@ -1,10 +1,27 @@
 import { chromium } from 'playwright-core';
+import { spawn, execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import { ensureArtifactDirs } from './paths.js';
 import { attachPage, logDownload } from './page-hooks.js';
 
 function race(promise, ms, fallback) {
   let t;
   return Promise.race([promise, new Promise(r => { t = setTimeout(() => r(fallback), ms); })]).finally(() => clearTimeout(t));
+}
+
+function findBrowser() {
+  const local = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || '', 'AppData', 'Local');
+  const pf = process.env.ProgramFiles || 'C:\\Program Files';
+  const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const candidates = [
+    { exe: path.join(local, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), data: path.join(local, 'BraveSoftware', 'Brave-Browser', 'User Data'), proc: 'brave.exe' },
+    { exe: path.join(pf, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), data: path.join(local, 'BraveSoftware', 'Brave-Browser', 'User Data'), proc: 'brave.exe' },
+    { exe: path.join(pf86, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'), data: path.join(local, 'BraveSoftware', 'Brave-Browser', 'User Data'), proc: 'brave.exe' },
+    { exe: path.join(pf, 'Google', 'Chrome', 'Application', 'chrome.exe'), data: path.join(local, 'Google', 'Chrome', 'User Data'), proc: 'chrome.exe' },
+    { exe: path.join(pf86, 'Microsoft', 'Edge', 'Application', 'msedge.exe'), data: path.join(local, 'Microsoft', 'Edge', 'User Data'), proc: 'msedge.exe' }
+  ];
+  return candidates.find(c => fs.existsSync(c.exe)) || null;
 }
 
 /**
@@ -31,19 +48,23 @@ export class BraveManager {
     this.browser = this.context = this.cdp = this.agentPage = null;
 
     let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        this.browser = await chromium.connectOverCDP(this.cdpUrl, { timeout: 5000, noDefaults: true });
+        this.browser = await chromium.connectOverCDP(this.cdpUrl, { timeout: 2500, noDefaults: true });
         break;
       } catch (err) {
         lastErr = err;
-        if (attempt < 3) await new Promise(r => setTimeout(r, 500));
+        if (attempt === 1 && /^http:\/\/(127\.0\.0\.1|localhost):9222\/?$/i.test(this.cdpUrl) && process.env.BRAVE_MCP_NO_AUTOLAUNCH !== '1') {
+          await this._autoLaunch();
+        } else if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 300));
+        }
       }
     }
     if (!this.browser) {
       throw new Error(
         `Could not connect to the browser at ${this.cdpUrl} (${lastErr?.message?.split('\n')[0]}). ` +
-        `Start Brave with --remote-debugging-port=9222 (brave-launcher/launch-brave.cmd). This server never launches a browser itself.`
+        `Start Brave with --remote-debugging-port=9222 (brave-launcher/launch-brave.cmd).`
       );
     }
     this.browser.on('disconnected', () => { this.browser = null; });
@@ -65,6 +86,32 @@ export class BraveManager {
       this.cdp = null;
     }
     return this.browser;
+  }
+
+  async _autoLaunch() {
+    const b = findBrowser();
+    if (!b) return;
+    try {
+      const running = execSync(`tasklist /FI "IMAGENAME eq ${b.proc}" /NH`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      if (running && running.toLowerCase().includes(b.proc)) return; // Don't kill a running non-debug browser without consent
+    } catch (_) {}
+    try {
+      const child = spawn(b.exe, [
+        '--remote-debugging-port=9222',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        `--user-data-dir=${b.data}`,
+        '--restore-last-session'
+      ], { detached: true, stdio: 'ignore' });
+      child.unref();
+      for (let i = 0; i < 15; i++) {
+        await new Promise(r => setTimeout(r, 400));
+        try {
+          const res = await fetch('http://127.0.0.1:9222/json/version');
+          if (res.ok) return;
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   tabId(page) {
@@ -97,7 +144,9 @@ export class BraveManager {
   }
 
   async _visibility(page) {
-    return race(page.evaluate(() => ({ v: document.visibilityState === 'visible', f: document.hasFocus() })).catch(() => null), 400, null);
+    const u = page.url();
+    if (!u || u.startsWith('chrome-extension:') || u.startsWith('devtools:')) return null;
+    return race(page.evaluate(() => ({ v: document.visibilityState === 'visible', f: document.hasFocus() })).catch(() => null), 180, null);
   }
 
   /** The tab the user is currently looking at. */

@@ -139,6 +139,34 @@ async function runAuditFixesTests() {
   assert(dlReceipt.changes.some(c => c.includes('Are you sure?')), "Dialog must be reported in changes");
   console.log("   ✅ Download and dialog events correctly captured in Action Receipts");
 
+  // --- Test 8: Fast In-Page Agent Caching & Intermediate Step Bypass ---
+  console.log("\n8. Testing In-Page Agent Caching & Fast Intermediate Steps...");
+  await pageA.setContent(`
+    <html>
+      <body>
+        <input id="f1" placeholder="Field 1" />
+        <input id="f2" placeholder="Field 2" />
+        <button id="go" onclick="document.getElementById('out').innerText = document.getElementById('f1').value + ':' + document.getElementById('f2').value">Go</button>
+        <div id="out"></div>
+        <iframe src="https://googlesyndication.com/ad" style="width:1px;height:1px"></iframe>
+      </body>
+    </html>
+  `);
+  const obsFast = await observer.observe(pageA);
+  const installed = await pageA.evaluate(() => Boolean(window[Symbol.for('brave-mcp')]?.call));
+  assert(installed, "pageAgent must install A.call on window for zero-retransmission CDP calls");
+  assert(obsFast.elements.every(e => e.frameIndex === null), "Ad iframes must be filtered out of observation");
+
+  const tBatch = Date.now();
+  await actions.execute(pageA, { action: 'type', ref: 'Field 1', text: 'Alpha' }, { fast: true });
+  await actions.execute(pageA, { action: 'type', ref: 'Field 2', text: 'Beta' }, { fast: true });
+  const rFinal = await actions.execute(pageA, { action: 'click', ref: 'button:Go' }, { observe: 'delta' });
+  const batchMs = Date.now() - tBatch;
+  const outText = await pageA.textContent('#out');
+  assert.strictEqual(outText, 'Alpha:Beta', "Fast intermediate steps must populate fields and click button");
+  assert(batchMs < 600, `Fast 3-step sequence took ${batchMs}ms, expected <600ms`);
+  console.log(`   ✅ In-page agent cached, ad frames skipped, and 3-step sequence finished in ${batchMs}ms`);
+
   await pageA.close();
   await pageB.close();
   await browser.close();

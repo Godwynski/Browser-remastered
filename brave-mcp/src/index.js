@@ -59,7 +59,8 @@ const TOOLS = [
       properties: {
         action: S('Default list', { enum: ['list', 'switch', 'new', 'close', 'focus'] }),
         tab: TAB,
-        url: S('new: URL to open')
+        url: S('new: URL to open'),
+        observe: B('switch/new: false skips initial observe')
       }
     }
   },
@@ -72,7 +73,7 @@ const TOOLS = [
         tab: TAB,
         scope: S('CSS selector to limit to (e.g. form, main, #results)'),
         filter: S('Only some elements', { enum: ['inputs', 'clickable'] }),
-        max: I('Max elements (default 50)'),
+        max: I('Max elements (default 40)'),
         visible_only: B('Only elements in the viewport'),
         screenshot: B('Attach a screenshot'),
         labels: B('Draw refs on the screenshot (implies screenshot)'),
@@ -190,14 +191,15 @@ async function handleTabs(a) {
     const page = tab !== undefined ? await brave.setActivePage(tab, { bringToFront: action === 'focus' || a.bringToFront === true }) : await brave.getTargetPage();
     if (action === 'focus' && tab === undefined) await page.bringToFront().catch(() => {});
     if (action === 'focus') return reply(`ok focused ${brave.tabId(page)} for the user`);
-    const obs = await observer.observe(page, { tabId: brave.tabId(page) });
+    if (a.observe === false || a.and_observe === false) return reply(`ok your tab is now ${brave.tabId(page)} (${shortUrl(page.url())})`);
+    const obs = await observer.observe(page, { tabId: brave.tabId(page), maxElements: 25 });
     return reply(`ok your tab is now ${brave.tabId(page)}\n${obs.elements_compact}`);
   }
 
   if (action === 'new') {
     const page = await brave.newTab(a.url || 'about:blank');
-    if (!a.url || a.url === 'about:blank') return reply(`ok opened ${brave.tabId(page)} in the background (your tab)`);
-    const obs = await observer.observe(page, { tabId: brave.tabId(page) });
+    if (!a.url || a.url === 'about:blank' || a.observe === false || a.and_observe === false) return reply(`ok opened ${brave.tabId(page)} in the background (your tab)`);
+    const obs = await observer.observe(page, { tabId: brave.tabId(page), maxElements: 25 });
     return reply(`ok opened ${brave.tabId(page)} in the background (your tab)\n${obs.elements_compact}`);
   }
 
@@ -216,7 +218,7 @@ async function handleObserve(a) {
     tabId: brave.tabId(page),
     scope: a.scope,
     filter: a.filter,
-    maxElements: pick(a.max, a.maxElements) ?? 50,
+    maxElements: pick(a.max, a.maxElements) ?? 40,
     visibleOnly: a.visible_only ?? a.visibleOnly ?? false,
     includeScreenshot: Boolean(a.screenshot || a.includeScreenshot || a.labels || crop || a.clip),
     labels: Boolean(a.labels),
@@ -267,7 +269,7 @@ async function handleAct(a) {
     if (isLast && (a.screenshot || a.includeScreenshot)) step.includeScreenshot = true;
     const prefix = multi ? `${i + 1}. ` : '';
     try {
-      const r = await actions.execute(page, step, { observe: isLast ? mode : 'none', tabId: brave.tabId(page) });
+      const r = await actions.execute(page, step, { observe: isLast ? mode : 'none', tabId: brave.tabId(page), fast: !isLast });
       lines.push(`${prefix}ok ${r.changes.join(' | ')}`);
       if (r.newPage) {
         page = r.newPage;

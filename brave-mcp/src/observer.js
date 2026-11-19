@@ -1,12 +1,26 @@
-import { pageAgent } from './page-agent.js';
+import { evalAgent, handleAgent } from './page-agent.js';
 
 export class StaleRefError extends Error {}
 
-const FRAME_TIMEOUT = 3000;
+const FRAME_TIMEOUT = 1200;
+const AD_FRAME = /doubleclick|googlesyndication|googletagmanager|google-analytics|adsystem|adnxs|taboola|outbrain|criteo|pubmatic|rubiconproject|facebook\.com\/tr/i;
 
 function withTimeout(promise, ms, fallback) {
   let t;
   return Promise.race([promise, new Promise(r => { t = setTimeout(() => r(fallback), ms); })]).finally(() => clearTimeout(t));
+}
+
+function usableFrames(page) {
+  const main = page.mainFrame();
+  const out = [main];
+  for (const f of page.frames()) {
+    if (f === main || f.isDetached()) continue;
+    const u = f.url();
+    if (!u || u === 'about:blank' || u.startsWith('javascript:') || AD_FRAME.test(u)) continue;
+    out.push(f);
+    if (out.length >= 6) break;
+  }
+  return out;
 }
 
 /** Per-page ref registry: maps stable page-level refs (e12) to {frame, lid, doc}. */
@@ -63,7 +77,7 @@ export class BrowserObserver {
       screenshotScope = null,
       labels = false,
       clip = null,
-      maxElements = 50,
+      maxElements = 40,
       scope = null,
       filter = null,
       visibleOnly = false,
@@ -73,7 +87,7 @@ export class BrowserObserver {
 
     const bm = pageState(page);
     const mainFrame = page.mainFrame();
-    const frames = page.frames().filter(f => !f.isDetached());
+    const frames = usableFrames(page);
 
     // Which already-seen refs belong to which frame (to detect removals).
     const seenByFrame = new Map();
@@ -90,11 +104,11 @@ export class BrowserObserver {
         op: 'observe',
         scope: isMain ? scope : null,
         filter: filter === 'all' || filter === 'interactive' ? null : (filter === 'buttons_links' ? 'clickable' : filter),
-        max: isMain ? maxElements : Math.min(20, maxElements),
+        max: isMain ? maxElements : Math.min(12, maxElements),
         visibleOnly,
         seen: seenByFrame.get(frame) || []
       };
-      const run = frame.evaluate(pageAgent, req).catch(err => ({ error: err.message }));
+      const run = evalAgent(frame, req).catch(err => ({ error: err.message }));
       return withTimeout(run, FRAME_TIMEOUT, { error: 'frame timed out' });
     }));
 
@@ -222,7 +236,7 @@ export class BrowserObserver {
     try {
       if (labels) {
         const items = elements.filter(e => e.frameIndex === null && e.pos === 0).map(e => ({ lid: bm.refs.get(e.ref).lid, ref: e.ref }));
-        labeled = await page.evaluate(pageAgent, { op: 'labels', items }).catch(() => false);
+        labeled = await evalAgent(page.mainFrame(), { op: 'labels', items }).catch(() => false);
       }
       let buf;
       if (screenshotScope) {
@@ -237,19 +251,19 @@ export class BrowserObserver {
     } catch (_) {
       return null;
     } finally {
-      if (labeled) await page.evaluate(pageAgent, { op: 'unlabels' }).catch(() => {});
+      if (labeled) await evalAgent(page.mainFrame(), { op: 'unlabels' }).catch(() => {});
     }
   }
 
   /** Registers an element found by text/role/css and returns its ref. */
   async find(page, query) {
     const bm = pageState(page);
-    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame() && !f.isDetached())];
+    const frames = usableFrames(page);
     for (const frame of frames) {
-      const res = await withTimeout(frame.evaluate(pageAgent, { op: 'find', ...query }).catch(() => null), FRAME_TIMEOUT, null);
+      const res = await withTimeout(evalAgent(frame, { op: 'find', ...query }).catch(() => null), FRAME_TIMEOUT, null);
       if (res?.error) throw new Error(res.error);
       if (!res) continue;
-      const doc = await frame.evaluate(pageAgent, { op: 'ping' });
+      const doc = res.doc || await evalAgent(frame, { op: 'ping' });
       const fk = frameKey(bm, frame);
       const key = `${fk}:${doc}:${res.lid}`;
       let ref = bm.byKey.get(key);
@@ -270,7 +284,7 @@ export class BrowserObserver {
         : `No refs yet. Call brave_observe first or target by text, e.g. ref:"Sign in".`);
     }
     if (r.frame.isDetached()) throw new StaleRefError(`Ref '${ref}' was inside a frame that is gone.`);
-    const h = await r.frame.evaluateHandle(pageAgent, { op: 'get', lid: r.lid, doc: r.doc, sig: r.sig });
+    const h = await handleAgent(r.frame, { op: 'get', lid: r.lid, doc: r.doc, sig: r.sig });
     const el = h.asElement();
     if (!el) {
       await h.dispose().catch(() => {});

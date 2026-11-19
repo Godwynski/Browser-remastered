@@ -1,7 +1,7 @@
-import { pageAgent } from './page-agent.js';
+import { evalAgent } from './page-agent.js';
 import { attachPage, inflight, downloadsLog } from './page-hooks.js';
 
-const QUIET_MS = 150;
+const QUIET_MS = 100;
 
 function withTimeout(promise, ms, fallback) {
   let t;
@@ -13,7 +13,7 @@ export class UserActiveError extends Error {}
 /**
  * Brackets every action: marks the page busy (so dialogs/popups are attributed to the agent),
  * records DOM text added by the action, and waits deterministically for the page to settle
- * (no mutations for 150ms and no new XHR/fetch in flight), polling from Node so it works in
+ * (no mutations for 100ms and no new XHR/fetch in flight), polling from Node so it works in
  * background tabs where timers and rAF are throttled.
  */
 export class StateVerifier {
@@ -21,28 +21,39 @@ export class StateVerifier {
     this.observer = observer;
   }
 
-  async captureBeforeState(page, { respectUser = true } = {}) {
+  async captureBeforeState(page, { respectUser = true, fast = false } = {}) {
     const bm = attachPage(page);
-    const status = () => withTimeout(page.mainFrame().evaluate(pageAgent, { op: 'status' }).catch(() => null), 2500, null);
-    let st = await status();
-    if (!st) {
+    if (fast) {
+      if (bm.pendingDialog) {
+        const d = bm.pendingDialog;
+        throw new Error(`Page is blocked by a dialog (${d.type()}: "${d.message().slice(0, 100)}"). Ask the user, or use action:"dialog" with accept:true/false.`);
+      }
+      bm.busy = true;
+      bm.popup = null;
+      const t = Date.now();
+      return { url: page.url(), title: '', doc: bm.mainDoc, t, lastDialogTime: bm.lastDialog?.t || 0, timestamp: t, fast: true };
+    }
+    const begin = () => withTimeout(evalAgent(page.mainFrame(), { op: 'begin' }).catch(() => null), 2000, null);
+    let s = await begin();
+    if (!s) {
       const d = bm.pendingDialog;
       throw new Error(d
         ? `Page is blocked by a dialog (${d.type()}: "${d.message().slice(0, 100)}"). Ask the user, or use action:"dialog" with accept:true/false.`
         : 'Page is not responding (frozen, discarded, or blocked by a dialog).');
     }
     // Co-browsing guard: don't type over the user. Wait briefly for them to pause.
-    if (respectUser && st.userIdle < 1200) {
+    if (respectUser && s.userIdle < 1200) {
       const until = Date.now() + 2500;
-      while (Date.now() < until && st.userIdle < 1200) {
+      while (Date.now() < until && s.userIdle < 1200) {
         await new Promise(r => setTimeout(r, 250));
-        st = (await status()) || st;
+        const st = await withTimeout(evalAgent(page.mainFrame(), { op: 'status' }).catch(() => null), 1500, null);
+        if (st) s.userIdle = st.userIdle;
       }
-      if (st.userIdle < 1200) {
+      if (s.userIdle < 1200) {
+        await evalAgent(page.mainFrame(), { op: 'end' }).catch(() => {});
         throw new UserActiveError('The user is actively using this tab. Wait a moment and retry, or work in another tab.');
       }
     }
-    const s = await page.mainFrame().evaluate(pageAgent, { op: 'begin' });
     bm.busy = true;
     bm.popup = null;
     const t = Date.now();
@@ -57,37 +68,49 @@ export class StateVerifier {
     };
   }
 
-  async captureAfterState(page, before, { includeScreenshot = false, maxWait = 1500, expectChange = false } = {}) {
+  async captureAfterState(page, before, { includeScreenshot = false, maxWait = 1200, expectChange = false, fast = false } = {}) {
     const bm = attachPage(page);
     const start = Date.now();
+    if (fast) {
+      bm.busy = false;
+      return {
+        url: page.isClosed() ? before.url : page.url(),
+        title: before.title,
+        doc: before.doc,
+        navigated: !page.isClosed() && page.url() !== before.url,
+        texts: [],
+        settleMs: Date.now() - start,
+        closed: page.isClosed(),
+        screenshot: null,
+        timestamp: Date.now()
+      };
+    }
     let navigated = false, newDoc = false;
-    await new Promise(r => setTimeout(r, 40));
+    await new Promise(r => setTimeout(r, 25));
     while (!page.isClosed()) {
       if (page.url() !== before.url) navigated = true;
-      const st = await withTimeout(page.mainFrame().evaluate(pageAgent, { op: 'status' }).catch(() => null), 1500, null);
+      const st = await withTimeout(evalAgent(page.mainFrame(), { op: 'status' }).catch(() => null), 1200, null);
       if (!st || st.doc !== before.doc) navigated = newDoc = true;
       if (newDoc && !bm.loaded) {
         await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
         bm.loaded = true;
         continue;
       }
-      const limit = navigated ? Math.max(maxWait, 4000) : maxWait;
+      const limit = navigated ? Math.max(maxWait, 3500) : maxWait;
       if (newDoc) {
-        // New page: DOMContentLoaded already passed; wait for rendering to calm down, not for every request.
-        if (st && st.quiet >= 250) break;
+        if (st && st.quiet >= 180) break;
       } else {
-        // Clicks usually cause a change; give delayed handlers (debounce, animations) a short window to start.
-        const waitingFirst = expectChange && st && st.mutAt < before.t && Date.now() - start < 450;
+        const waitingFirst = expectChange && st && st.mutAt < before.t && Date.now() - start < 240;
         if (st && st.quiet >= QUIET_MS && inflight(bm, before.t) === 0 && !waitingFirst) break;
       }
       if (Date.now() - start > limit) break;
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 40));
     }
     bm.loaded = false;
 
     let end = null;
     if (!page.isClosed()) {
-      end = await withTimeout(page.mainFrame().evaluate(pageAgent, { op: 'end' }).catch(() => null), 1500, null);
+      end = await withTimeout(evalAgent(page.mainFrame(), { op: 'end' }).catch(() => null), 1200, null);
     }
     bm.busy = false;
 

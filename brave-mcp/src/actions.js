@@ -1,8 +1,8 @@
-import { pageAgent, flashElement } from './page-agent.js';
+import { evalAgent, flashElement } from './page-agent.js';
 import { attachPage } from './page-hooks.js';
 import { pageState } from './observer.js';
 
-const HIGHLIGHT = process.env.BRAVE_MCP_HIGHLIGHT !== '0';
+const HIGHLIGHT = process.env.BRAVE_MCP_HIGHLIGHT === '1';
 
 const ROLES = new Set([
   'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio', 'switch',
@@ -208,8 +208,8 @@ export class ActionEngine {
     let what;
     const check = async () => {
       if (p.url) { what = `url ~ "${p.url}"`; return page.url().includes(p.url); }
-      if (p.text) { what = `text "${p.text}"`; return page.mainFrame().evaluate(pageAgent, { op: 'text', q: p.text }).catch(() => false); }
-      if (p.gone) { what = `text "${p.gone}" gone`; return !(await page.mainFrame().evaluate(pageAgent, { op: 'text', q: p.gone }).catch(() => true)); }
+      if (p.text) { what = `text "${p.text}"`; return evalAgent(page.mainFrame(), { op: 'text', q: p.text }).catch(() => false); }
+      if (p.gone) { what = `text "${p.gone}" gone`; return !(await evalAgent(page.mainFrame(), { op: 'text', q: p.gone }).catch(() => true)); }
       if (p.ref) {
         what = `"${p.ref}"`;
         try { await this.target(page, p.ref); return true; } catch (_) { return false; }
@@ -219,7 +219,7 @@ export class ActionEngine {
     while (true) {
       if (await check()) return `waited for ${what}`;
       if (Date.now() > end) throw new Error(`wait timed out after ${timeout}ms for ${what}`);
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 80));
     }
   }
 
@@ -246,7 +246,7 @@ export class ActionEngine {
   /**
    * Executes one action and returns a receipt. observe: 'delta' | 'full' | 'none'.
    */
-  async execute(page, params, { andObserve = false, observe = null, observeOptions = {}, tabId = null } = {}) {
+  async execute(page, params, { andObserve = false, observe = null, observeOptions = {}, tabId = null, fast = false } = {}) {
     const p = normalizeStep(params);
     const action = p.action;
     if (!action) throw new Error("Missing 'action'.");
@@ -261,7 +261,8 @@ export class ActionEngine {
 
     const bm = attachPage(page);
     bm.dialogPolicy = { accept: p.dialog !== 'dismiss', text: p.dialogText };
-    const before = await this.verifier.captureBeforeState(page, { respectUser: p.force !== true });
+    const fastStep = fast && (action === 'type' || action === 'hover' || action === 'scroll' || action === 'wait' || action === 'eval');
+    const before = await this.verifier.captureBeforeState(page, { respectUser: p.force !== true, fast: fastStep });
 
     let did, how = null, result, refUsed = p.ref, targetRole = null;
     const xy = parseXY(p.xy);
@@ -343,7 +344,7 @@ export class ActionEngine {
             lid = pageState(page).refs.get(t.ref)?.lid;
             frame = t.frame;
           }
-          const r = await frame.evaluate(pageAgent, { op: 'scroll', dir: p.dir || 'down', amount: p.amount, lid });
+          const r = await evalAgent(frame, { op: 'scroll', dir: p.dir || 'down', amount: p.amount, lid });
           did = `scroll ${p.dir || 'down'} (${r.container}) y=${r.y}/${r.h}${r.moved ? '' : ' — did not move (end reached?)'}`;
           break;
         }
@@ -396,9 +397,10 @@ export class ActionEngine {
 
     const after = await this.verifier.captureAfterState(page, before, {
       includeScreenshot: p.includeScreenshot,
-      maxWait: action === 'wait' ? 400 : 1500,
+      maxWait: fast ? 400 : (action === 'wait' || action === 'type' || action === 'hover' || action === 'scroll' ? 250 : 1200),
+      fast: fastStep,
       // Toggles and form fields change properties, not DOM, so don't wait for a mutation there.
-      expectChange: (action === 'click' || action === 'press') && !xy && !STATEFUL.has(targetRole)
+      expectChange: !fast && (action === 'click' || action === 'press') && !xy && !STATEFUL.has(targetRole)
     });
     const fx = this.verifier.sideEffects(page, before);
     const popup = bm.popup && !bm.popup.isClosed() ? bm.popup : null;

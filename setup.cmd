@@ -23,10 +23,10 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 
-:: 3. Configure Antigravity MCP JSON
+:: 3. Configure Antigravity, Claude Code & Codex MCP Configs
 echo.
-echo [2/2] Auto-registering MCP server in Antigravity config...
-node -e "const fs=require('fs'),path=require('path'),os=require('os');const p=path.join(os.homedir(),'.gemini','config','mcp_config.json');fs.mkdirSync(path.dirname(p),{recursive:true});let c={mcpServers:{}};try{c=JSON.parse(fs.readFileSync(p,'utf8'))}catch{};c.mcpServers=c.mcpServers||{};c.mcpServers['brave-control']={command:'cmd.exe',args:['/c',path.resolve(process.argv[1])]};fs.writeFileSync(p,JSON.stringify(c,null,2),'utf8');console.log('   [OK] Registered brave-control in: ' + p);" "%~dp0brave-mcp\run-mcp.cmd"
+echo [2/2] Auto-registering brave-control across Antigravity, Claude, and Codex...
+node -e "const fs=require('fs'),path=require('path'),os=require('os'),h=os.homedir(),s=path.resolve(process.argv[1]);for(const rel of [['.gemini','config','mcp_config.json'],['.gemini','antigravity','mcp_config.json'],['.claude.json']]){const p=path.join(h,...rel);try{fs.mkdirSync(path.dirname(p),{recursive:true});let c={};try{c=JSON.parse(fs.readFileSync(p,'utf8'))}catch{};c.mcpServers=c.mcpServers||{};c.mcpServers['brave-control']={type:'stdio',command:'node',args:[s]};fs.writeFileSync(p,JSON.stringify(c,null,2),'utf8');console.log('   [OK] Registered in: '+p);}catch(e){}}" "%~dp0brave-mcp\src\index.js"
 
 echo.
 echo ========================================================
